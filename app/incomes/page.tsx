@@ -115,7 +115,7 @@ export default function IncomesPage() {
 
     // Valida que vouchers têm conta vinculada
     if (VOUCHER_TYPES.includes(formData.type) && !formData.account_id) {
-      alert('Vale Refeição/Alimentação precisa estar vinculado a uma conta. Crie uma conta do tipo "Vale Refeição" primeiro.');
+      alert('Vale Refeição/Alimentação precisa estar vinculado a uma conta. Crie uma conta do tipo &quot;Vale Refeição&quot; primeiro.');
       return;
     }
 
@@ -285,7 +285,7 @@ export default function IncomesPage() {
             </label>
             {isVoucherType && (
               <div style={{ backgroundColor: '#fff3cd', padding: 10, borderRadius: 6, marginBottom: 8, fontSize: 13 }}>
-                ⚠️ VR/VA são saldos separados. Vincule a uma conta do tipo "Vale Refeição" para controlar o saldo corretamente.
+                ⚠️ VR/VA são saldos separados. Vincule a uma conta do tipo &quot;Vale Refeição&quot; para controlar o saldo corretamente.
                 {accounts.filter(a => a.type === 'meal_voucher' || a.type === 'food_voucher').length === 0 && (
                   <span> <Link href="/accounts" style={{ color: '#3498db' }}>Criar conta VR →</Link></span>
                 )}

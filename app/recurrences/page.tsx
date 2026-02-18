@@ -174,7 +174,7 @@ export default function RecurrencesPage() {
         <div style={{ textAlign: 'center', padding: 48, color: '#666' }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>🔁</div>
           <h3>Nenhuma recorrência ativa</h3>
-          <p>Ao lançar um gasto, marque "recorrente" para que ele apareça aqui automaticamente.</p>
+          <p>Ao lançar um gasto, marque &quot;recorrente&quot; para que ele apareça aqui automaticamente.</p>
           <Link href="/transactions/new">
             <button style={{ padding: '12px 24px', fontSize: 16, backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', marginTop: 8 }}>
               ➕ Lançar gasto recorrente

@@ -311,7 +311,7 @@ export default function CategoriesPage() {
       <div>
         {categories.length === 0 ? (
           <p style={{ textAlign: 'center', color: '#666', padding: 32 }}>
-            Nenhuma categoria criada ainda. Clique em "Nova categoria" para começar!
+            Nenhuma categoria criada ainda. Clique em &quot;Nova categoria&quot; para começar!
           </p>
         ) : (
           categories.map((cat) => (
