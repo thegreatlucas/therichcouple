@@ -9,6 +9,7 @@ import Header from '@/app/components/Header';
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState('');
+  const [userName, setUserName] = useState('');
   const [householdId, setHouseholdId] = useState<string | null>(null);
   const [householdName, setHouseholdName] = useState('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
@@ -52,6 +53,7 @@ export default function Dashboard() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
     setUserEmail(user.email || '');
+    setUserName(user.user_metadata?.name || user.email?.split('@')[0] || '');
     setCurrentUserId(user.id);
 
     const { data: member } = await supabase
@@ -232,7 +234,7 @@ export default function Dashboard() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
             <h1 style={{ margin: 0, fontSize: 22 }}>
-              Olá{userEmail ? `, ${userEmail.split('@')[0]}` : ''}! 👋
+              Olá{userName ? `, ${userName}` : ''}! 👋
             </h1>
             <p style={{ margin: '4px 0 0', color: '#666', fontSize: 14 }}>
               {householdName && `🏠 ${householdName} · `}{monthLabel}
