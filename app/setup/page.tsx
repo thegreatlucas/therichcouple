@@ -279,7 +279,7 @@ export default function SetupPage() {
               type="text"
               value={householdName}
               onChange={(e) => setHouseholdName(e.target.value)}
-              placeholder="Lucas & Ana"
+              placeholder="Lucas & Victória"
               style={{ width: '100%', padding: 12, fontSize: 16, borderRadius: 8, border: '1px solid #ddd', marginBottom: 8 }}
             />
             <p style={{ fontSize: 12, color: '#999', marginBottom: 20 }}>
