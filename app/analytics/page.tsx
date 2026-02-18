@@ -372,7 +372,7 @@ export default function AnalyticsPage() {
                     ))}
                   </Pie>
                   <Tooltip
-                    formatter={(value: number) => `R$ ${value.toFixed(2)}`}
+                    formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : "R$ 0.00"}
                   />
                 </PieChart>
               </ResponsiveContainer>
@@ -420,7 +420,7 @@ export default function AnalyticsPage() {
                     <XAxis dataKey="month" />
                     <YAxis />
                     <Tooltip
-                      formatter={(value: number) => `R$ ${value.toFixed(2)}`}
+                      formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : "R$ 0.00"}
                     />
                     <Line
                       type="monotone"
@@ -449,7 +449,7 @@ export default function AnalyticsPage() {
                 <XAxis dataKey="name" />
                 <YAxis />
                 <Tooltip
-                  formatter={(value: number) => `R$ ${value.toFixed(2)}`}
+                  formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : "R$ 0.00"}
                 />
                 <Bar dataKey="value" radius={[8, 8, 0, 0]}>
                   {categoryData.map((entry, index) => (
