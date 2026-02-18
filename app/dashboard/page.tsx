@@ -173,7 +173,7 @@ export default function Dashboard() {
       .select('*')
       .eq('household_id', hid)
       .or(`type.eq.shared,owner_id.eq.${uid}`)
-      .lt('current_amount', supabase.rpc ? 'target_amount' : 999999999) // workaround
+      .lt('current_amount', 999999999)
       .order('created_at');
 
     // filtra não concluídas no client
