@@ -8,20 +8,44 @@
   --background-end-rgb: 255, 255, 255;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --foreground-rgb: 255, 255, 255;
-    --background-start-rgb: 0, 0, 0;
-    --background-end-rgb: 0, 0, 0;
-  }
+/* Força modo claro em toda a aplicação */
+:root {
+  color-scheme: light;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  color: #1a1a1a;
+  background: white;
+}
+
+/* Inputs sempre com fundo branco e texto escuro */
+input,
+select,
+textarea {
+  background-color: #ffffff !important;
+  color: #1a1a1a !important;
+  border-color: #cccccc;
+  -webkit-text-fill-color: #1a1a1a !important;
+}
+
+input::placeholder,
+select::placeholder,
+textarea::placeholder {
+  color: #999999 !important;
+  -webkit-text-fill-color: #999999 !important;
+}
+
+/* Previne que o Chrome aplique dark mode automático */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #1a1a1a !important;
+  -webkit-box-shadow: 0 0 0px 1000px #ffffff inset !important;
+  box-shadow: 0 0 0px 1000px #ffffff inset !important;
+}
+
+/* Garante fundo branco nas páginas */
+main {
+  background-color: #ffffff;
+  min-height: 100vh;
 }
