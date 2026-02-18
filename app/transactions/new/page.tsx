@@ -40,7 +40,7 @@ export default function NewTransaction() {
         .eq('user_id', user.id);
 
       setHouseholds(memberData || []);
-      const householdId = memberData?.[0]?.households?.id;
+      const householdId = (memberData?.[0]?.households as any)?.id;
 
       if (householdId) {
         setSelectedHousehold(householdId);
