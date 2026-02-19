@@ -439,6 +439,7 @@ export default function Dashboard() {
             { href: '/financings', icon: '🏠', label: 'Financiamentos' },
             { href: '/balances', icon: '🤝', label: 'Acerto' },
             { href: '/categories', icon: '🏷️', label: 'Categorias' },
+            { href: '/simulator', icon: '🧮', label: 'Simulador' },
             { href: '/setup', icon: '⚙️', label: 'Configurar' },
           ].map(({ href, icon, label }) => (
             <Link key={href} href={href} style={{ textDecoration: 'none' }}>

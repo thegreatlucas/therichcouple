@@ -18,6 +18,7 @@ const INCOME_TYPES = [
 
 const RECURRENCE_OPTIONS = [
   { value: 'monthly', label: '📅 Todo mês' },
+  { value: 'annual', label: '📆 Anual (IPVA/IPTU)' },
   { value: 'once', label: '1️⃣ Único' },
 ];
 
@@ -41,6 +42,7 @@ export default function IncomesPage() {
     recurrence: 'monthly',
     month: new Date().toISOString().slice(0, 7),
     account_id: '',
+    installments: '1',
   });
   const router = useRouter();
 
@@ -73,6 +75,7 @@ export default function IncomesPage() {
       .from('incomes')
       .select('*, accounts(name, type)')
       .eq('household_id', hid)
+      .eq('user_id', uid)
       .order('month', { ascending: false });
 
     setIncomes(data || []);
@@ -126,6 +129,7 @@ export default function IncomesPage() {
       amount: parseFloat(formData.amount),
       type: formData.type,
       recurrence: formData.recurrence,
+      installments: parseInt(formData.installments) || 1,
       month: formData.month + '-01',
       account_id: formData.account_id || null,
     };
@@ -156,6 +160,7 @@ export default function IncomesPage() {
       amount: income.amount.toString(),
       type: income.type,
       recurrence: income.recurrence,
+      installments: income.installments?.toString() || '1',
       month: income.month.slice(0, 7),
       account_id: income.account_id || '',
     });
@@ -319,6 +324,34 @@ export default function IncomesPage() {
             </div>
           </div>
 
+          {/* Parcelamento para receitas anuais */}
+          {formData.recurrence === 'annual' && (
+            <div style={{ marginBottom: 16, padding: 12, backgroundColor: '#f0f8ff', borderRadius: 8, border: '1px solid #3498db' }}>
+              <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>📋 Parcelamento:</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div>
+                  <label style={{ fontSize: 13, color: '#666' }}>Parcelas:</label>
+                  <select
+                    value={formData.installments}
+                    onChange={(e) => setFormData({ ...formData, installments: e.target.value })}
+                    style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 6, border: '1px solid #ccc', marginTop: 4 }}
+                  >
+                    {[1,2,3,4,5,6,7,8,9,10,11,12].map(n => (
+                      <option key={n} value={n}>{n === 1 ? 'À vista' : `${n}x`}</option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 2 }}>
+                  <p style={{ fontSize: 12, color: '#3498db', margin: 0 }}>
+                    {formData.installments === '1'
+                      ? 'Pago de uma vez'
+                      : `${formData.installments}x de R$ ${formData.amount ? (parseFloat(formData.amount) / parseInt(formData.installments)).toFixed(2) : '0.00'}`}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 8 }}>
             <button type="submit" style={{ padding: '10px 20px', fontSize: 16, backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
               {editingId ? '💾 Salvar' : '➕ Criar'}
@@ -362,6 +395,11 @@ export default function IncomesPage() {
                     <div style={{ fontSize: 13, color: '#666' }}>
                       {getTypeLabel(income.type)}
                       {income.recurrence === 'monthly' && <span style={{ marginLeft: 8, color: '#3498db' }}>· Mensal</span>}
+                      {income.recurrence === 'annual' && (
+                        <span style={{ marginLeft: 8, color: '#9b59b6' }}>
+                          · Anual {income.installments > 1 ? `· ${income.installments}x de R$ ${(Number(income.amount)/income.installments).toFixed(2)}` : '· À vista'}
+                        </span>
+                      )}
                       {income.accounts?.name && <span style={{ marginLeft: 8, color: '#9b59b6' }}>· {income.accounts.name}</span>}
                     </div>
                   </div>
