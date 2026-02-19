@@ -145,6 +145,9 @@ export default function NewTransaction() {
       split: splitType,
       is_recurring: isRecurring || isSubscription,
       is_subscription: isSubscription,
+      // Salva referência ao cartão e mês da fatura para permitir decrementar ao deletar
+      credit_card_id: paymentMethod === 'credit' ? creditCardId : null,
+      invoice_month: paymentMethod === 'credit' ? invoiceMonth : null,
     };
 
     if (isParcelado) {

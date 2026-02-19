@@ -112,6 +112,8 @@ export default function TransactionsPage() {
 
   async function deleteTransaction(tx: any) {
     if (!confirm(`Deletar "${tx.description}"?`)) return;
+
+    // Desfaz balanço compartilhado
     if (tx.split === 'shared') {
       const { data: members } = await supabase.from('household_members').select('user_id').eq('household_id', householdId!);
       const otherId = (members || []).map((m: any) => m.user_id).find((id: string) => id !== user.id);
@@ -120,6 +122,27 @@ export default function TransactionsPage() {
         await applyBalanceDelta(householdId!, user.id, otherId, wasPayer ? -(Number(tx.amount) / 2) : (Number(tx.amount) / 2));
       }
     }
+
+    // Decrementa a fatura do cartão de crédito, se aplicável
+    if (tx.payment_method === 'credit' && tx.credit_card_id && tx.invoice_month) {
+      const { data: invoice } = await supabase
+        .from('invoices')
+        .select('*')
+        .eq('credit_card_id', tx.credit_card_id)
+        .eq('month', tx.invoice_month)
+        .maybeSingle();
+
+      if (invoice) {
+        const newTotal = Number(invoice.total) - Number(tx.amount);
+        if (newTotal <= 0) {
+          // Fatura ficou zerada — pode deletar
+          await supabase.from('invoices').delete().eq('id', invoice.id);
+        } else {
+          await supabase.from('invoices').update({ total: newTotal }).eq('id', invoice.id);
+        }
+      }
+    }
+
     const { error } = await supabase.from('transactions').delete().eq('id', tx.id);
     if (!error) setTransactions(prev => prev.filter(t => t.id !== tx.id));
     else alert('Erro: ' + error.message);
