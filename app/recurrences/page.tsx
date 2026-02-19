@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Header from '@/app/components/Header';
 import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
+import { applyBalanceDelta } from '@/lib/balance';
 
 type RecurrenceType = 'fixed' | 'variable';
 
@@ -16,6 +17,8 @@ const emptyForm = {
   type: 'fixed' as RecurrenceType,
   amount: '',
   due_day: '1',
+  // CORRIGIDO: split agora é configurável por recorrência (era hardcoded 'shared' em payNow)
+  split: 'individual' as 'individual' | 'shared',
   category: '',
   notes: '',
   payment_method: 'pix' as string,
@@ -107,6 +110,15 @@ export default function RecurrencesPage() {
     }
   }
 
+  // Busca o outro membro do household
+  async function getOtherUserId(hid: string, uid: string): Promise<string | null> {
+    const { data: members } = await supabase
+      .from('household_members')
+      .select('user_id')
+      .eq('household_id', hid);
+    return (members || []).find((m: any) => m.user_id !== uid)?.user_id ?? null;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!householdId || !userId) return;
@@ -129,6 +141,8 @@ export default function RecurrencesPage() {
       recurrence_type: formData.type,
       amount: formData.type === 'fixed' ? parseFloat(formData.amount) || 0 : null,
       due_day: day,
+      // CORRIGIDO: split salvo corretamente na regra
+      split: formData.split,
       category: formData.category.trim(),
       notes: formData.notes.trim(),
       payment_method: formData.payment_method,
@@ -155,6 +169,9 @@ export default function RecurrencesPage() {
     if (!householdId || !userId) return;
     const today = new Date().toISOString().split('T')[0];
 
+    // CORRIGIDO: usa o split configurado na regra, não hardcoded 'shared'
+    const txSplit = r.split ?? 'individual';
+
     const txBase = {
       household_id: householdId,
       user_id: userId,
@@ -163,7 +180,7 @@ export default function RecurrencesPage() {
       description: r.name,
       date: today,
       payment_method: r.payment_method,
-      split: 'shared',
+      split: txSplit,
       is_recurring: true,
       account_id: r.account_id || null,
     };
@@ -176,6 +193,14 @@ export default function RecurrencesPage() {
     if (r.payment_method === 'credit_card' && r.credit_card_id && r.credit_cards?.closing_day) {
       const invoiceMonth = calculateInvoiceMonth(today, r.credit_cards.closing_day);
       await upsertInvoice(r.credit_card_id, invoiceMonth, r.amount);
+    }
+
+    // CORRIGIDO: só atualiza balance se split for 'shared'
+    if (txSplit === 'shared') {
+      const otherUserId = await getOtherUserId(householdId, userId);
+      if (otherUserId) {
+        await applyBalanceDelta(householdId, userId, otherUserId, Number(r.amount) / 2);
+      }
     }
 
     alert(`✅ "${r.name}" marcado como pago!`);
@@ -194,6 +219,8 @@ export default function RecurrencesPage() {
       last_updated: today,
     }).eq('id', id);
 
+    const txSplit = rule?.split ?? 'individual';
+
     const txBase = {
       household_id: householdId,
       user_id: userId,
@@ -202,7 +229,7 @@ export default function RecurrencesPage() {
       description: rule?.name || 'Conta variável',
       date: today,
       payment_method: rule?.payment_method || 'debit',
-      split: 'shared',
+      split: txSplit,
       is_recurring: true,
       account_id: rule?.account_id || null,
     };
@@ -213,6 +240,14 @@ export default function RecurrencesPage() {
     if (rule?.payment_method === 'credit_card' && rule?.credit_card_id && rule?.credit_cards?.closing_day) {
       const invoiceMonth = calculateInvoiceMonth(today, rule.credit_cards.closing_day);
       await upsertInvoice(rule.credit_card_id, invoiceMonth, amount);
+    }
+
+    // CORRIGIDO: balance só se shared
+    if (txSplit === 'shared' && householdId && userId) {
+      const otherUserId = await getOtherUserId(householdId, userId);
+      if (otherUserId) {
+        await applyBalanceDelta(householdId, userId, otherUserId, amount / 2);
+      }
     }
 
     setVariableAmounts(prev => ({ ...prev, [id]: '' }));
@@ -232,6 +267,7 @@ export default function RecurrencesPage() {
       type: r.recurrence_type || 'fixed',
       amount: r.amount?.toString() || '',
       due_day: r.due_day?.toString() || '1',
+      split: r.split || 'individual',
       category: r.category || '',
       notes: r.notes || '',
       payment_method: r.payment_method || 'pix',
@@ -298,6 +334,7 @@ export default function RecurrencesPage() {
           </div>
         </div>
 
+        {/* Vencimentos urgentes */}
         {(() => {
           const urgent = recurrences.filter(r => {
             if (r.recurrence_type !== 'fixed') return false;
@@ -318,6 +355,9 @@ export default function RecurrencesPage() {
                     {r.payment_method === 'credit_card' && r.credit_cards?.name && (
                       <span style={{ color: '#9b59b6', fontSize: 13 }}> · {r.credit_cards.name}</span>
                     )}
+                    {' '}<span style={{ color: '#666', fontSize: 12 }}>
+                      {r.split === 'shared' ? '· 👫 Compartilhado' : '· 👤 Individual'}
+                    </span>
                     {' '}— vence dia {r.due_day}
                   </span>
                   <button onClick={() => payNow(r)}
@@ -363,6 +403,20 @@ export default function RecurrencesPage() {
                     <button key={ex} type="button" onClick={() => setFormData({ ...formData, name: ex })}
                       style={{ padding: '3px 8px', fontSize: 12, backgroundColor: '#f0f0f0', border: '1px solid #ddd', borderRadius: 20, cursor: 'pointer' }}>
                       {ex}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* CORRIGIDO: campo de split configurável */}
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Divisão:</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  {(['individual', 'shared'] as const).map(s => (
+                    <button key={s} type="button"
+                      onClick={() => setFormData({ ...formData, split: s })}
+                      style={{ padding: 10, border: formData.split === s ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.split === s ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: formData.split === s ? 'bold' : 'normal', fontSize: 14 }}>
+                      {s === 'individual' ? '👤 Individual' : '👫 Compartilhado (50/50)'}
                     </button>
                   ))}
                 </div>
@@ -516,6 +570,9 @@ export default function RecurrencesPage() {
                       {r.category && <span>{r.category} · </span>}
                       Todo dia {r.due_day} · {urgency}
                     </div>
+                    <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+                      {r.split === 'shared' ? '👫 Compartilhado' : '👤 Individual'}
+                    </div>
                     {isCc && r.credit_cards?.name && (
                       <div style={{ fontSize: 12, color: '#9b59b6', marginTop: 3 }}>💳 {r.credit_cards.name}</div>
                     )}
@@ -560,6 +617,9 @@ export default function RecurrencesPage() {
                       <div style={{ fontSize: 13, color: '#666' }}>
                         {r.category && <span>{r.category} · </span>}
                         Todo dia {r.due_day} · {urgency}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+                        {r.split === 'shared' ? '👫 Compartilhado' : '👤 Individual'}
                       </div>
                       {isCc && r.credit_cards?.name && (
                         <div style={{ fontSize: 12, color: '#9b59b6', marginTop: 3 }}>💳 {r.credit_cards.name}</div>

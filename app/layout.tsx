@@ -2,6 +2,7 @@ import './globals.css';
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import { CryptoProvider } from '@/lib/cryptoContext';
+import { ToastProvider } from '@/app/components/Toast';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -26,6 +27,8 @@ export default function RootLayout({
     <html lang="pt-BR">
       <body className={inter.className}>
         <CryptoProvider>
+          {/* ToastProvider deve ficar dentro do CryptoProvider mas fora das páginas */}
+          <ToastProvider />
           {children}
         </CryptoProvider>
       </body>

@@ -4,6 +4,9 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { generateHouseholdKey, encryptHouseholdKey } from '@/lib/crypto';
+import { useCrypto } from '@/lib/cryptoContext';
+
 
 type View = 'loading' | 'existing' | 'choose' | 'create' | 'join';
 
@@ -18,12 +21,19 @@ export default function SetupPage() {
   const [loading, setLoading] = useState(false);
   const [userName, setUserName] = useState('');
   const router = useRouter();
+  const { setHouseholdKey } = useCrypto();
+  const [vaultPin, setVaultPin] = useState('');
+
 
   useEffect(() => {
     checkExistingHousehold();
   }, []);
 
   async function checkExistingHousehold() {
+    if (!vaultPin || vaultPin.length < 4) {
+      setErrorMsg('Digite um PIN de 4+ dígitos para proteger seus dados.');
+      setLoading(false); return;
+    
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
     setUserName(user.user_metadata?.name || '');

@@ -13,6 +13,8 @@ export default function BalancesPage() {
   const [balance, setBalance] = useState<{ amount: number; iOwe: boolean } | null>(null);
   const [sharedTransactions, setSharedTransactions] = useState<any[]>([]);
   const [hasPartner, setHasPartner] = useState(false);
+  // CORRIGIDO: nome real do parceiro em vez de 'Parceiro(a)' hardcoded
+  const [partnerName, setPartnerName] = useState('Parceiro(a)');
   const router = useRouter();
 
   useEffect(() => {
@@ -36,7 +38,7 @@ export default function BalancesPage() {
   }, []);
 
   async function loadData(hid: string, uid: string) {
-    // Verifica se há parceiro
+    // Verifica membros e busca nome do parceiro
     const { data: memberRows } = await supabase
       .from('household_members')
       .select('user_id')
@@ -46,14 +48,23 @@ export default function BalancesPage() {
     const hasP = userIds.length >= 2;
     setHasPartner(hasP);
 
-    // Busca saldo da tabela balances
+    // CORRIGIDO: busca nome real do parceiro na tabela profiles
+    const partnerUserId = userIds.find((id: string) => id !== uid);
+    if (partnerUserId) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('name')
+        .eq('id', partnerUserId)
+        .single();
+      if (profile?.name) setPartnerName(profile.name);
+    }
+
+    // Busca saldo
     const { data: balRows } = await supabase
       .from('balances')
       .select('*')
       .eq('household_id', hid);
 
-    // Calcula saldo líquido do ponto de vista do usuário atual
-    // positivo = outro me deve; negativo = eu devo para o outro
     let netAmount = 0;
     for (const row of balRows || []) {
       if (row.to_user_id === uid) {
@@ -69,7 +80,7 @@ export default function BalancesPage() {
       setBalance(null);
     }
 
-    // Busca transações compartilhadas para histórico
+    // Histórico de transações compartilhadas (últimas 30)
     const { data: txs } = await supabase
       .from('transactions')
       .select('*, categories(name, icon)')
@@ -83,23 +94,9 @@ export default function BalancesPage() {
 
   async function settleBalance() {
     if (!householdId || !currentUserId) return;
-    if (!confirm('Confirmar acerto de contas? Isso vai zerar o saldo entre vocês.')) return;
+    if (!confirm(`Confirmar acerto de contas? O saldo com ${partnerName} será zerado.`)) return;
 
     setSettling(true);
-
-    // Registra uma transação de acerto para histórico
-    if (balance && balance.amount > 0.001) {
-      await supabase.from('transactions').insert({
-        household_id: householdId,
-        user_id: currentUserId,
-        payer_id: currentUserId,
-        amount: balance.amount,
-        description: '✅ Acerto de contas',
-        date: new Date().toISOString().split('T')[0],
-        payment_method: 'transfer',
-        split: 'individual',
-      });
-    }
 
     // Zera todos os registros de balance do household
     await supabase.from('balances').delete().eq('household_id', householdId);
@@ -147,7 +144,7 @@ export default function BalancesPage() {
               <>
                 <div style={{ fontSize: 52 }}>🎉</div>
                 <h2 style={{ color: '#27ae60', margin: '12px 0 4px' }}>Tudo zerado!</h2>
-                <p style={{ color: '#666', fontSize: 14 }}>Vocês estão quites.</p>
+                <p style={{ color: '#666', fontSize: 14 }}>Você e {partnerName} estão quites.</p>
               </>
             ) : (
               <>
@@ -156,8 +153,8 @@ export default function BalancesPage() {
                 </div>
                 <div style={{ fontSize: 15, color: '#666', marginBottom: 8 }}>
                   {balance?.iOwe
-                    ? 'Você deve para Parceiro(a)'
-                    : 'Parceiro(a) deve para você'}
+                    ? `Você deve para ${partnerName}`
+                    : `${partnerName} deve para você`}
                 </div>
                 <div style={{ fontSize: 40, fontWeight: 'bold', color: balance?.iOwe ? '#e74c3c' : '#27ae60', marginBottom: 20 }}>
                   R$ {balance?.amount.toFixed(2)}
@@ -226,7 +223,7 @@ export default function BalancesPage() {
                           {tx.categories?.name ? ` · ${tx.categories.name}` : ''}
                           {' · '}
                           <span style={{ color: isPayer ? '#27ae60' : '#e67e22' }}>
-                            {isPayer ? '💳 Você pagou' : '💳 Parceiro(a) pagou'}
+                            {isPayer ? '💳 Você pagou' : `💳 ${partnerName} pagou`}
                           </span>
                         </div>
                       </div>

@@ -5,6 +5,7 @@ import { supabase } from '../../../lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
+import { applyBalanceDelta } from '@/lib/balance';
 
 export default function NewTransaction() {
   const [user, setUser] = useState<any>(null);
@@ -189,31 +190,10 @@ export default function NewTransaction() {
       }
     }
 
-    // Balance compartilhado
+    // CORRIGIDO: balance usando applyBalanceDelta centralizado
+    // currentUser pagou → otherUser deve metade para currentUser (delta positivo)
     if (splitType === 'shared' && otherUserId) {
-      const splitAmount = finalAmount / 2;
-      const { data: balA } = await supabase.from('balances').select('*')
-        .eq('household_id', selectedHousehold)
-        .eq('from_user_id', otherUserId).eq('to_user_id', user.id).maybeSingle();
-      const { data: balB } = await supabase.from('balances').select('*')
-        .eq('household_id', selectedHousehold)
-        .eq('from_user_id', user.id).eq('to_user_id', otherUserId).maybeSingle();
-
-      if (balA) {
-        await supabase.from('balances').update({ amount: Number(balA.amount) + splitAmount }).eq('id', balA.id);
-      } else if (balB) {
-        const newAmount = Number(balB.amount) - splitAmount;
-        if (newAmount > 0.001) {
-          await supabase.from('balances').update({ amount: newAmount }).eq('id', balB.id);
-        } else if (newAmount < -0.001) {
-          await supabase.from('balances').delete().eq('id', balB.id);
-          await supabase.from('balances').insert({ household_id: selectedHousehold, from_user_id: otherUserId, to_user_id: user.id, amount: Math.abs(newAmount) });
-        } else {
-          await supabase.from('balances').delete().eq('id', balB.id);
-        }
-      } else {
-        await supabase.from('balances').insert({ household_id: selectedHousehold, from_user_id: otherUserId, to_user_id: user.id, amount: splitAmount });
-      }
+      await applyBalanceDelta(selectedHousehold, user.id, otherUserId, finalAmount / 2);
     }
 
     // Recorrência
@@ -228,6 +208,7 @@ export default function NewTransaction() {
         day_of_month: dayOfMonth,
         next_date: nextDate.toISOString().split('T')[0],
         active: true,
+        split: splitType,
       });
     }
 
@@ -437,7 +418,6 @@ export default function NewTransaction() {
                           placeholder="Ex: 85.90" step="0.01" min="0"
                           style={{ width: '100%', padding: 8, fontSize: 15, borderRadius: 6, border: '2px solid #e74c3c', marginBottom: 8 }}
                         />
-
                         {installmentValue && amount && (
                           <div style={{ backgroundColor: '#fde8e8', padding: 12, borderRadius: 8, border: '1px solid #e74c3c' }}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, textAlign: 'center', marginBottom: 10 }}>

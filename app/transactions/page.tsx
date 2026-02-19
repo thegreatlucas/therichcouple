@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { applyBalanceDelta } from '@/lib/balance';
 
 export default function TransactionsPage() {
   const [user, setUser] = useState<any>(null);
@@ -26,25 +27,26 @@ export default function TransactionsPage() {
         return;
       }
 
-      const { data: members } = await supabase
+      const { data: members, error: memberError } = await supabase
         .from('household_members')
         .select('household_id')
         .eq('user_id', user.id)
         .limit(1)
         .single();
 
-      if (members) {
-        setHouseholdId(members.household_id);
+      if (memberError || !members) {
+        router.push('/setup');
+        return;
       }
 
-      if (members) {
-        const { data: cats } = await supabase
-          .from('categories')
-          .select('*')
-          .eq('household_id', members.household_id)
-          .order('name');
-        setCategories(cats || []);
-      }
+      setHouseholdId(members.household_id);
+
+      const { data: cats } = await supabase
+        .from('categories')
+        .select('*')
+        .eq('household_id', members.household_id)
+        .order('name');
+      setCategories(cats || []);
 
       setLoading(false);
     }
@@ -61,14 +63,9 @@ export default function TransactionsPage() {
   async function loadTransactions() {
     if (!householdId) return;
 
-    // REMOVIDO: users(email) - Causa erro de relacionamento
     let query = supabase
       .from('transactions')
-      .select(`
-        *,
-        categories(name),
-        accounts(name)
-      `)
+      .select('*, categories(name, icon, color), accounts(name)')
       .eq('household_id', householdId)
       .order('date', { ascending: false });
 
@@ -90,7 +87,7 @@ export default function TransactionsPage() {
       query = query.eq('category_id', filterCategory);
     }
 
-    const { data, error } = await query;
+    const { data, error } = await query.limit(100);
 
     if (error) {
       console.error('Erro ao buscar transações:', error);
@@ -100,16 +97,42 @@ export default function TransactionsPage() {
     setTransactions(data || []);
   }
 
-  async function deleteTransaction(id: string) {
+  // CORRIGIDO: reverte o balance ao deletar transação compartilhada
+  async function deleteTransaction(tx: any) {
     if (!confirm('Tem certeza que deseja deletar este gasto?')) return;
+
+    // Se era compartilhada, reverter o balance
+    if (tx.split === 'shared' && householdId && user) {
+      const { data: members } = await supabase
+        .from('household_members')
+        .select('user_id')
+        .eq('household_id', householdId);
+
+      const otherUserId = (members || []).find(
+        (m: any) => m.user_id !== user.id
+      )?.user_id;
+
+      if (otherUserId) {
+        const wasPayer = tx.payer_id === user.id;
+        // Se eu paguei: eu tinha crédito de metade → reverter com delta negativo
+        // Se o outro pagou: eu tinha débito de metade → reverter com delta positivo
+        const delta = wasPayer
+          ? -(Number(tx.amount) / 2)
+          : Number(tx.amount) / 2;
+
+        await applyBalanceDelta(householdId, user.id, otherUserId, delta);
+      }
+    }
 
     const { error } = await supabase
       .from('transactions')
       .delete()
-      .eq('id', id);
+      .eq('id', tx.id);
 
     if (!error) {
-      setTransactions(transactions.filter(t => t.id !== id));
+      setTransactions(prev => prev.filter(t => t.id !== tx.id));
+    } else {
+      alert('Erro ao deletar: ' + error.message);
     }
   }
 
@@ -117,7 +140,7 @@ export default function TransactionsPage() {
     return <main style={{ padding: 16 }}>Carregando...</main>;
   }
 
-  const total = transactions.reduce((sum, t) => sum + t.amount, 0);
+  const total = transactions.reduce((sum, t) => sum + Number(t.amount), 0);
 
   return (
     <main style={{ padding: 16 }}>
@@ -130,10 +153,10 @@ export default function TransactionsPage() {
         </Link>
       </div>
 
-      <div style={{ 
-        backgroundColor: '#f5f5f5', 
-        padding: 16, 
-        borderRadius: 8, 
+      <div style={{
+        backgroundColor: '#f5f5f5',
+        padding: 16,
+        borderRadius: 8,
         marginBottom: 24,
         display: 'flex',
         gap: 16,
@@ -166,23 +189,20 @@ export default function TransactionsPage() {
           >
             <option value="all">Todas</option>
             {categories.map(cat => (
-              <option key={cat.id} value={cat.id}>{cat.name}</option>
+              <option key={cat.id} value={cat.id}>{cat.icon} {cat.name}</option>
             ))}
           </select>
         </div>
 
         {(filterPeriod !== 'all' || filterCategory !== 'all') && (
           <button
-            onClick={() => {
-              setFilterPeriod('all');
-              setFilterCategory('all');
-            }}
-            style={{ 
-              padding: '8px 16px', 
-              borderRadius: 4, 
-              backgroundColor: '#e74c3c', 
-              color: 'white', 
-              border: 'none', 
+            onClick={() => { setFilterPeriod('all'); setFilterCategory('all'); }}
+            style={{
+              padding: '8px 16px',
+              borderRadius: 4,
+              backgroundColor: '#e74c3c',
+              color: 'white',
+              border: 'none',
               cursor: 'pointer',
               fontSize: 14
             }}
@@ -192,10 +212,10 @@ export default function TransactionsPage() {
         )}
       </div>
 
-      <div style={{ 
-        backgroundColor: '#fff3cd', 
-        padding: 16, 
-        borderRadius: 8, 
+      <div style={{
+        backgroundColor: '#fff3cd',
+        padding: 16,
+        borderRadius: 8,
         marginBottom: 24,
         textAlign: 'center',
         border: '2px solid #ffc107'
@@ -222,37 +242,48 @@ export default function TransactionsPage() {
             <div
               key={transaction.id}
               style={{
-                border: '1px solid #ddd',
+                border: transaction.split === 'shared' ? '1px solid #c5cae9' : '1px solid #ddd',
                 padding: 12,
                 marginBottom: 8,
                 borderRadius: 8,
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                backgroundColor: 'white'
+                backgroundColor: transaction.split === 'shared' ? '#fafcff' : 'white',
               }}
             >
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 'bold', marginBottom: 4, fontSize: 16 }}>
-                  {transaction.description}
+                  {transaction.categories?.icon || '📁'} {transaction.description}
                 </div>
                 <div style={{ fontSize: 14, color: '#666' }}>
-                  {transaction.categories?.name || 'Sem categoria'} • {transaction.payment_method}
+                  {transaction.categories?.name || 'Sem categoria'} · {transaction.payment_method}
+                  {transaction.split === 'shared' && (
+                    <span style={{ color: '#9b59b6', marginLeft: 6 }}>· 👫 Compartilhado</span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
-                  {new Date(transaction.date).toLocaleDateString('pt-BR', { 
-                    day: '2-digit', 
-                    month: 'long', 
-                    year: 'numeric' 
+                  {new Date(transaction.date + 'T12:00:00').toLocaleDateString('pt-BR', {
+                    day: '2-digit',
+                    month: 'long',
+                    year: 'numeric',
                   })}
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e74c3c' }}>
-                  R$ {transaction.amount.toFixed(2)}
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e74c3c' }}>
+                    R$ {Number(transaction.amount).toFixed(2)}
+                  </div>
+                  {transaction.split === 'shared' && (
+                    <div style={{ fontSize: 12, color: '#9b59b6' }}>
+                      Sua parte: R$ {(Number(transaction.amount) / 2).toFixed(2)}
+                    </div>
+                  )}
                 </div>
+                {/* CORRIGIDO: passa o objeto tx inteiro */}
                 <button
-                  onClick={() => deleteTransaction(transaction.id)}
+                  onClick={() => deleteTransaction(transaction)}
                   style={{
                     padding: '6px 10px',
                     backgroundColor: '#ff4444',
@@ -260,7 +291,7 @@ export default function TransactionsPage() {
                     border: 'none',
                     borderRadius: 4,
                     cursor: 'pointer',
-                    fontSize: 16
+                    fontSize: 16,
                   }}
                   title="Deletar"
                 >
