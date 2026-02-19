@@ -30,7 +30,7 @@ export async function encryptField(plaintext: string, key: CryptoKey): Promise<s
   const combined = new Uint8Array(iv.byteLength + ciphertext.byteLength);
   combined.set(iv);
   combined.set(new Uint8Array(ciphertext), iv.byteLength);
-  return btoa(String.fromCharCode(...combined));
+  return btoa(String.fromCharCode(...Array.from(combined)));
 }
 
 export async function decryptField(encoded: string, key: CryptoKey): Promise<string> {
