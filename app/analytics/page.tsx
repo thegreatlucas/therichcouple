@@ -5,427 +5,407 @@ import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Header from '@/app/components/Header';
-import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
+import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar } from 'recharts';
 
-type GoalType = 'individual' | 'shared';
-type GoalKind = 'target' | 'monthly';
-
-type Goal = {
-  id: string;
+interface CategoryData {
   name: string;
-  type: GoalType;
-  kind?: GoalKind;
-  target_amount: number;
-  current_amount: number;
-  monthly_target?: number;
-  deadline: string | null;
-  owner_id: string | null;
-};
+  value: number;
+  color: string;
+  icon: string;
+}
 
-export default function GoalsPage() {
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [loading, setLoading] = useState(true);
+interface MonthlyData {
+  month: string;
+  amount: number;
+}
+
+export default function AnalyticsPage() {
   const [householdId, setHouseholdId] = useState<string | null>(null);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [showCreateForm, setShowCreateForm] = useState(false);
-  const [activeMovement, setActiveMovement] = useState<string | null>(null);
-  const [movementForm, setMovementForm] = useState({ amount: '', type: 'deposit' as 'deposit' | 'withdrawal' });
-  const [savingMovement, setSavingMovement] = useState(false);
-  const [newGoal, setNewGoal] = useState({ name: '', target: '', monthlyTarget: '', deadline: '', type: 'individual' as GoalType, kind: 'target' as GoalKind });
-  const [creating, setCreating] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [currentMonthSaved, setCurrentMonthSaved] = useState<Record<string, number>>({});
+  const [categoryData, setCategoryData] = useState<CategoryData[]>([]);
+  const [monthlyData, setMonthlyData] = useState<MonthlyData[]>([]);
+  const [insights, setInsights] = useState<string[]>([]);
+  const [period, setPeriod] = useState('3months');
+  const [totalSpent, setTotalSpent] = useState(0);
+  const [avgPerDay, setAvgPerDay] = useState(0);
+  const [topCategory, setTopCategory] = useState('');
+  const [totalInterestPaid, setTotalInterestPaid] = useState(0);
+  const [interestTransactions, setInterestTransactions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
-  const { encryptRecord } = useEncryptedInsert();
 
-  useEffect(() => { init(); }, []);
+  useEffect(() => {
+    async function loadHousehold() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { router.push('/login'); return; }
 
-  async function init() {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { router.push('/login'); return; }
-    setCurrentUserId(user.id);
-    const { data: member } = await supabase.from('household_members').select('household_id').eq('user_id', user.id).single();
-    if (!member) { router.push('/setup'); return; }
-    setHouseholdId(member.household_id);
-    await loadGoals(member.household_id, user.id);
-    setLoading(false);
-  }
+      const { data: members } = await supabase
+        .from('household_members')
+        .select('household_id')
+        .eq('user_id', user.id)
+        .limit(1)
+        .single();
 
-  async function loadGoals(hid: string, uid: string) {
-    const { data } = await supabase
-      .from('goals')
-      .select('*')
-      .eq('household_id', hid)
-      .or(`type.eq.shared,owner_id.eq.${uid}`)
-      .order('created_at', { ascending: false });
-    setGoals(data || []);
-    await loadCurrentMonthSavings(hid, data || []);
-  }
-
-  async function loadCurrentMonthSavings(hid: string, goals: Goal[]) {
-    const now = new Date();
-    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-
-    const monthlyGoalIds = goals.filter(g => g.kind === 'monthly' || (g as any).monthly_target > 0).map(g => g.id);
-    if (monthlyGoalIds.length === 0) return;
-
-    const { data: movements } = await supabase
-      .from('goal_movements')
-      .select('*')
-      .in('goal_id', monthlyGoalIds)
-      .gte('date', firstOfMonth)
-      .eq('type', 'deposit');
-
-    const saved: Record<string, number> = {};
-    for (const m of movements || []) {
-      saved[m.goal_id] = (saved[m.goal_id] || 0) + Number(m.amount);
+      if (members) setHouseholdId(members.household_id);
+      setLoading(false);
     }
-    setCurrentMonthSaved(saved);
-  }
+    loadHousehold();
+  }, [router]);
 
-  async function createGoal(e: React.FormEvent) {
-    e.preventDefault();
-    setErrorMsg(null);
-    if (!newGoal.name.trim()) { setErrorMsg('Digite um nome.'); return; }
-    if (newGoal.kind === 'target' && (!newGoal.target || parseFloat(newGoal.target) <= 0)) { setErrorMsg('Digite um valor alvo válido.'); return; }
-    if (newGoal.kind === 'monthly' && (!newGoal.monthlyTarget || parseFloat(newGoal.monthlyTarget) <= 0)) { setErrorMsg('Digite uma meta mensal válida.'); return; }
-    if (!householdId || !currentUserId) return;
-    setCreating(true);
+  useEffect(() => {
+    if (!householdId) return;
 
-    const base: any = {
-      household_id: householdId,
-      owner_id: newGoal.type === 'individual' ? currentUserId : null,
-      type: newGoal.type,
-      name: newGoal.name.trim(),
-      target_amount: newGoal.kind === 'target' ? parseFloat(newGoal.target) : parseFloat(newGoal.monthlyTarget),
-      current_amount: 0,
-      deadline: newGoal.deadline || null,
-      // Usamos o campo notes (ou similar) para guardar kind e monthly_target
-      // Na prática usa target_amount como monthly_target para metas mensais
-    };
+    async function loadAnalytics() {
+      const now = new Date();
+      let startDate: Date;
 
-    // Para metas mensais: target_amount = meta mensal (valor a guardar por mês)
-    if (newGoal.kind === 'monthly') {
-      base.target_amount = parseFloat(newGoal.monthlyTarget);
+      switch (period) {
+        case '3months': startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1); break;
+        case '6months': startDate = new Date(now.getFullYear(), now.getMonth() - 6, 1); break;
+        case 'year': startDate = new Date(now.getFullYear() - 1, now.getMonth(), 1); break;
+        default: startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+      }
+
+      const startDateStr = startDate.toISOString().split('T')[0];
+
+      const { data: transactions, error } = await supabase
+        .from('transactions')
+        .select('*, categories(name, icon, color)')
+        .eq('household_id', householdId)
+        .gte('date', startDateStr)
+        .order('date', { ascending: true });
+
+      if (error) { console.error('Erro ao buscar transações:', error); return; }
+
+      if (!transactions || transactions.length === 0) {
+        setCategoryData([]);
+        setMonthlyData([]);
+        setInsights(['📭 Nenhum gasto registrado neste período']);
+        setTotalSpent(0);
+        setAvgPerDay(0);
+        setTotalInterestPaid(0);
+        setInterestTransactions([]);
+        return;
+      }
+
+      // Processa categorias
+      const categoryMap = new Map<string, CategoryData>();
+      let total = 0;
+
+      transactions.forEach((t) => {
+        total += t.amount;
+        const catName = t.categories?.name || 'Sem categoria';
+        const existing = categoryMap.get(catName);
+        if (existing) {
+          existing.value += t.amount;
+        } else {
+          categoryMap.set(catName, {
+            name: catName,
+            value: t.amount,
+            color: t.categories?.color || '#95a5a6',
+            icon: t.categories?.icon || '📁'
+          });
+        }
+      });
+
+      const catData = Array.from(categoryMap.values()).sort((a, b) => b.value - a.value);
+      setCategoryData(catData);
+      setTotalSpent(total);
+
+      // Processa dados mensais
+      const monthlyMap = new Map<string, number>();
+      transactions.forEach((t) => {
+        const month = t.date.slice(0, 7);
+        monthlyMap.set(month, (monthlyMap.get(month) || 0) + t.amount);
+      });
+
+      const monthlyArray = Array.from(monthlyMap.entries()).map(([month, amount]) => ({
+        month: new Date(month + '-01').toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
+        amount
+      }));
+      setMonthlyData(monthlyArray);
+
+      // Calcula juros pagos no período
+      const interestTxs = transactions.filter(t =>
+        t.total_with_interest != null &&
+        t.original_amount != null &&
+        t.total_with_interest > t.original_amount
+      );
+      const totalInterest = interestTxs.reduce((sum, t) =>
+        sum + (Number(t.total_with_interest) - Number(t.original_amount)), 0
+      );
+      setTotalInterestPaid(totalInterest);
+      setInterestTransactions(interestTxs);
+
+      // Insights
+      const days = Math.ceil((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+      const avgDay = total / days;
+      setAvgPerDay(avgDay);
+
+      if (catData.length > 0) {
+        setTopCategory(catData[0].name);
+        generateInsights(catData, total, avgDay, monthlyArray, totalInterest, interestTxs);
+      }
     }
 
-    const payload = await encryptRecord(base);
-    const { error } = await supabase.from('goals').insert(payload);
-    setCreating(false);
-    if (error) { setErrorMsg('Erro ao criar: ' + error.message); return; }
-    setNewGoal({ name: '', target: '', monthlyTarget: '', deadline: '', type: 'individual', kind: 'target' });
-    setShowCreateForm(false);
-    await loadGoals(householdId, currentUserId);
-  }
+    loadAnalytics();
+  }, [householdId, period]);
 
-  async function saveMovement(goalId: string) {
-    const amount = parseFloat(movementForm.amount);
-    if (!amount || amount <= 0) { alert('Digite um valor válido.'); return; }
-    const goal = goals.find(g => g.id === goalId);
-    if (!goal) return;
-    if (movementForm.type === 'withdrawal' && amount > goal.current_amount) {
-      alert(`Saldo insuficiente. Disponível: R$ ${goal.current_amount.toFixed(2)}`);
-      return;
+  function generateInsights(
+    catData: CategoryData[],
+    total: number,
+    avgDay: number,
+    monthly: MonthlyData[],
+    totalInterest: number,
+    interestTxs: any[]
+  ) {
+    const insightsList: string[] = [];
+
+    if (catData.length > 0) {
+      const topCat = catData[0];
+      const percentage = ((topCat.value / total) * 100).toFixed(0);
+      insightsList.push(`${topCat.icon} Você gasta ${percentage}% do seu dinheiro em ${topCat.name}`);
     }
-    setSavingMovement(true);
-    await supabase.from('goal_movements').insert({ goal_id: goalId, amount, type: movementForm.type, date: new Date().toISOString().split('T')[0] });
-    const delta = movementForm.type === 'deposit' ? amount : -amount;
-    await supabase.from('goals').update({ current_amount: Math.max(0, goal.current_amount + delta) }).eq('id', goalId);
-    setSavingMovement(false);
-    setActiveMovement(null);
-    setMovementForm({ amount: '', type: 'deposit' });
-    if (householdId && currentUserId) await loadGoals(householdId, currentUserId);
+
+    insightsList.push(`💸 Sua média de gasto é R$ ${avgDay.toFixed(2)} por dia`);
+
+    if (monthly.length >= 2) {
+      const lastMonth = monthly[monthly.length - 1].amount;
+      const prevMonth = monthly[monthly.length - 2].amount;
+      const diff = lastMonth - prevMonth;
+      const diffPercent = ((diff / prevMonth) * 100).toFixed(0);
+      if (diff > 0) {
+        insightsList.push(`📈 Seus gastos aumentaram ${diffPercent}% no último mês`);
+      } else if (diff < 0) {
+        insightsList.push(`📉 Parabéns! Você economizou ${Math.abs(parseFloat(diffPercent))}% no último mês`);
+      } else {
+        insightsList.push(`➡️ Seus gastos se mantiveram estáveis no último mês`);
+      }
+    }
+
+    const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+    const projection = avgDay * daysInMonth;
+    insightsList.push(`🔮 Projeção para o mês: R$ ${projection.toFixed(2)}`);
+
+    if (catData.length >= 3) {
+      const top3 = catData.slice(0, 3);
+      const top3Total = top3.reduce((sum, cat) => sum + cat.value, 0);
+      const top3Percent = ((top3Total / total) * 100).toFixed(0);
+      insightsList.push(`🎯 ${top3Percent}% dos gastos estão em apenas 3 categorias`);
+    }
+
+    // Insight de juros
+    if (totalInterest > 0) {
+      const interestPercOfTotal = ((totalInterest / total) * 100).toFixed(1);
+      insightsList.push(`📈 Você pagou R$ ${totalInterest.toFixed(2)} em juros neste período (${interestPercOfTotal}% do total gasto)`);
+
+      if (interestTxs.length > 0) {
+        const biggestInterest = interestTxs.reduce((max, t) =>
+          (Number(t.total_with_interest) - Number(t.original_amount)) > (Number(max.total_with_interest) - Number(max.original_amount)) ? t : max
+        );
+        const biggestInterestAmount = Number(biggestInterest.total_with_interest) - Number(biggestInterest.original_amount);
+        insightsList.push(`💳 A compra "${biggestInterest.description}" teve o maior custo de juros: R$ ${biggestInterestAmount.toFixed(2)} a mais`);
+      }
+
+      if (totalInterest > 100) {
+        insightsList.push(`💡 Dica: com R$ ${totalInterest.toFixed(2)} em juros você poderia ter comprado à vista e economizado esse valor`);
+      }
+    } else {
+      insightsList.push(`✅ Parabéns! Nenhum juro pago neste período — todas as compras parceladas foram sem juros`);
+    }
+
+    setInsights(insightsList);
   }
 
-  async function deleteGoal(goalId: string, goalName: string) {
-    if (!confirm(`Excluir "${goalName}"?`)) return;
-    await supabase.from('goal_movements').delete().eq('goal_id', goalId);
-    await supabase.from('goals').delete().eq('id', goalId);
-    if (householdId && currentUserId) await loadGoals(householdId, currentUserId);
-  }
-
-  function daysUntilDeadline(deadline: string) {
-    const diff = Math.round((new Date(deadline + 'T12:00:00').getTime() - new Date().setHours(0, 0, 0, 0)) / 86400000);
-    if (diff < 0) return { label: `${Math.abs(diff)} dias em atraso`, color: '#e74c3c' };
-    if (diff === 0) return { label: 'Prazo hoje!', color: '#e67e22' };
-    if (diff <= 30) return { label: `${diff} dias restantes`, color: '#e67e22' };
-    return { label: `${diff} dias restantes`, color: '#27ae60' };
-  }
-
-  if (loading) return <main style={{ padding: 16 }}>Carregando...</main>;
-
-  function GoalCard({ goal }: { goal: Goal }) {
-    const isMonthly = (goal as any).kind === 'monthly';
-    const progress = goal.target_amount > 0 ? (goal.current_amount / goal.target_amount) * 100 : 0;
-    const isComplete = !isMonthly && progress >= 100;
-    const deadline = goal.deadline ? daysUntilDeadline(goal.deadline) : null;
-    const isMoving = activeMovement === goal.id;
-
-    // Para meta mensal: progresso do mês atual
-    const monthSaved = currentMonthSaved[goal.id] || 0;
-    const monthProgress = isMonthly && goal.target_amount > 0 ? (monthSaved / goal.target_amount) * 100 : 0;
-    const monthComplete = isMonthly && monthProgress >= 100;
-
+  const RADIAN = Math.PI / 180;
+  const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
+    const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+    if (percent < 0.05) return null;
     return (
-      <div style={{
-        border: isComplete || monthComplete ? '2px solid #2ecc71' : '1px solid #ddd',
-        borderRadius: 12, padding: 18, marginBottom: 14,
-        backgroundColor: isComplete || monthComplete ? '#f0fff4' : 'white',
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-          <div>
-            <span style={{ fontWeight: 'bold', fontSize: 16 }}>
-              {isMonthly ? '📅 ' : (isComplete ? '🏆 ' : '🎯 ')}{goal.name}
-            </span>
-            <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-              {goal.type === 'shared' && (
-                <span style={{ fontSize: 11, backgroundColor: '#e3f2fd', color: '#1565c0', padding: '2px 8px', borderRadius: 12 }}>👫 Casal</span>
-              )}
-              {isMonthly && (
-                <span style={{ fontSize: 11, backgroundColor: '#f3e5f5', color: '#7b1fa2', padding: '2px 8px', borderRadius: 12 }}>📅 Meta mensal</span>
-              )}
-            </div>
-          </div>
-          <button onClick={() => deleteGoal(goal.id, goal.name)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ccc', fontSize: 16 }}>🗑️</button>
-        </div>
+      <text x={x} y={y} fill="white" textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontWeight="bold" fontSize="14">
+        {`${(percent * 100).toFixed(0)}%`}
+      </text>
+    );
+  };
 
-        {/* Meta mensal: mostra progresso do mês */}
-        {isMonthly ? (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-              <div>
-                <span style={{ fontSize: 22, fontWeight: 'bold', color: monthComplete ? '#27ae60' : '#333' }}>R$ {monthSaved.toFixed(2)}</span>
-                <span style={{ fontSize: 13, color: '#999' }}> / R$ {goal.target_amount.toFixed(2)} este mês</span>
-              </div>
-            </div>
-            <div style={{ width: '100%', height: 10, backgroundColor: '#f0f0f0', borderRadius: 10, marginBottom: 6, overflow: 'hidden' }}>
-              <div style={{ width: `${Math.min(monthProgress, 100)}%`, height: '100%', backgroundColor: monthComplete ? '#2ecc71' : monthProgress > 66 ? '#f39c12' : '#3498db', borderRadius: 10, transition: 'width 0.3s' }} />
-            </div>
-            <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
-              {monthProgress.toFixed(0)}% da meta do mês
-              {monthSaved < goal.target_amount && (
-                <span style={{ color: '#999' }}> · faltam R$ {(goal.target_amount - monthSaved).toFixed(2)}</span>
-              )}
-            </div>
-            <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
-              Total acumulado: <strong>R$ {Number(goal.current_amount).toFixed(2)}</strong>
-            </div>
-            {monthComplete && (
-              <div style={{ textAlign: 'center', color: '#27ae60', fontWeight: 'bold', fontSize: 14, marginBottom: 8 }}>🎉 Meta do mês atingida!</div>
-            )}
-          </>
-        ) : (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-              <span style={{ fontSize: 22, fontWeight: 'bold', color: isComplete ? '#27ae60' : '#333' }}>R$ {Number(goal.current_amount).toFixed(2)}</span>
-              <span style={{ fontSize: 13, color: '#999' }}>de R$ {Number(goal.target_amount).toFixed(2)}</span>
-            </div>
-            <div style={{ width: '100%', height: 10, backgroundColor: '#f0f0f0', borderRadius: 10, marginBottom: 6, overflow: 'hidden' }}>
-              <div style={{ width: `${Math.min(progress, 100)}%`, height: '100%', backgroundColor: isComplete ? '#2ecc71' : progress > 66 ? '#f39c12' : '#3498db', borderRadius: 10, transition: 'width 0.3s' }} />
-            </div>
-            <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>
-              {progress.toFixed(1)}% concluído
-              {goal.target_amount > 0 && goal.current_amount < goal.target_amount && (
-                <span style={{ color: '#999' }}> · faltam R$ {(goal.target_amount - goal.current_amount).toFixed(2)}</span>
-              )}
-            </div>
-          </>
-        )}
-
-        {deadline && !isComplete && (
-          <div style={{ fontSize: 12, color: deadline.color, marginBottom: 10 }}>
-            📅 {new Date(goal.deadline! + 'T12:00:00').toLocaleDateString('pt-BR')} — {deadline.label}
-          </div>
-        )}
-
-        {!isComplete && !isMoving && (
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button onClick={() => { setActiveMovement(goal.id); setMovementForm({ amount: '', type: 'deposit' }); }}
-              style={{ flex: 1, padding: '8px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 'bold' }}>
-              ➕ Depositar
-            </button>
-            {goal.current_amount > 0 && (
-              <button onClick={() => { setActiveMovement(goal.id); setMovementForm({ amount: '', type: 'withdrawal' }); }}
-                style={{ flex: 1, padding: '8px', backgroundColor: '#e67e22', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 'bold' }}>
-                ➖ Resgatar
-              </button>
-            )}
-          </div>
-        )}
-
-        {isMoving && (
-          <div style={{ marginTop: 12, backgroundColor: '#f8f9fa', borderRadius: 8, padding: 14, border: '1px solid #ddd' }}>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-              <button onClick={() => setMovementForm(f => ({ ...f, type: 'deposit' }))}
-                style={{ flex: 1, padding: '8px', border: movementForm.type === 'deposit' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 6, backgroundColor: movementForm.type === 'deposit' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: movementForm.type === 'deposit' ? 'bold' : 'normal' }}>
-                ➕ Depositar
-              </button>
-              <button onClick={() => setMovementForm(f => ({ ...f, type: 'withdrawal' }))}
-                style={{ flex: 1, padding: '8px', border: movementForm.type === 'withdrawal' ? '2px solid #e67e22' : '1px solid #ddd', borderRadius: 6, backgroundColor: movementForm.type === 'withdrawal' ? '#fff3e0' : 'white', cursor: 'pointer', fontWeight: movementForm.type === 'withdrawal' ? 'bold' : 'normal' }}>
-                ➖ Resgatar
-              </button>
-            </div>
-            <input type="number" placeholder="0,00" value={movementForm.amount}
-              onChange={e => setMovementForm(f => ({ ...f, amount: e.target.value }))}
-              min="0.01" step="0.01" autoFocus
-              style={{ width: '100%', padding: 10, fontSize: 18, borderRadius: 6, border: '1px solid #ddd', marginBottom: 10, textAlign: 'center' }}
-            />
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => saveMovement(goal.id)} disabled={savingMovement}
-                style={{ flex: 1, padding: '10px', backgroundColor: savingMovement ? '#95a5a6' : (movementForm.type === 'deposit' ? '#27ae60' : '#e67e22'), color: 'white', border: 'none', borderRadius: 6, cursor: savingMovement ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}>
-                {savingMovement ? '⏳' : '✅ Confirmar'}
-              </button>
-              <button onClick={() => setActiveMovement(null)}
-                style={{ padding: '10px 16px', backgroundColor: 'transparent', border: '1px solid #ddd', borderRadius: 6, cursor: 'pointer', color: '#666' }}>
-                Cancelar
-              </button>
-            </div>
-          </div>
-        )}
-
-        {isComplete && (
-          <div style={{ textAlign: 'center', marginTop: 10, color: '#27ae60', fontWeight: 'bold', fontSize: 14 }}>🏆 Meta alcançada!</div>
-        )}
-      </div>
+  if (loading) {
+    return (
+      <main style={{ padding: 16, textAlign: 'center' }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>📊</div>
+        <h2>Carregando Analytics...</h2>
+      </main>
     );
   }
 
-  const sharedGoals = goals.filter(g => g.type === 'shared');
-  const individualGoals = goals.filter(g => g.type === 'individual');
+  if (!householdId) {
+    return (
+      <main style={{ padding: 16, textAlign: 'center' }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
+        <h2>Você não está em nenhum casal ainda</h2>
+        <Link href="/dashboard"><button style={{ padding: '12px 24px', marginTop: 16 }}>Voltar</button></Link>
+      </main>
+    );
+  }
 
   return (
     <>
-      <Header title="Metas" backHref="/dashboard" />
-      <main style={{ padding: 16, maxWidth: 600, margin: '0 auto' }}>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-          <div>
-            <p style={{ fontSize: 13, color: '#666', margin: 0 }}>
-              {goals.length} meta{goals.length !== 1 ? 's' : ''} ativa{goals.length !== 1 ? 's' : ''}
-            </p>
-          </div>
-          <button onClick={() => { setShowCreateForm(!showCreateForm); setErrorMsg(null); }}
-            style={{ padding: '10px 18px', backgroundColor: showCreateForm ? '#95a5a6' : '#3498db', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>
-            {showCreateForm ? '✕ Fechar' : '+ Nova meta'}
-          </button>
+      <Header title="Analytics" backHref="/dashboard" />
+      <main style={{ padding: 16, maxWidth: 1200, margin: '0 auto' }}>
+        <div style={{ marginBottom: 24 }}>
+          <h1 style={{ marginBottom: 8 }}>📊 Analytics & Insights</h1>
+          <p style={{ color: '#666', fontSize: 14 }}>Análise detalhada dos seus gastos</p>
         </div>
 
-        {/* Formulário de criação */}
-        {showCreateForm && (
-          <form onSubmit={createGoal} style={{ border: '1px solid #ddd', borderRadius: 12, padding: 20, marginBottom: 24, backgroundColor: '#fafafa' }}>
-            <h3 style={{ margin: '0 0 16px' }}>Nova meta</h3>
+        <div style={{ marginBottom: 24 }}>
+          <label style={{ fontWeight: 'bold', marginRight: 12 }}>📅 Período:</label>
+          <select value={period} onChange={(e) => setPeriod(e.target.value)}
+            style={{ padding: 8, fontSize: 16, borderRadius: 8, border: '1px solid #ddd' }}>
+            <option value="3months">Últimos 3 meses</option>
+            <option value="6months">Últimos 6 meses</option>
+            <option value="year">Último ano</option>
+          </select>
+        </div>
 
-            {/* Tipo de meta */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8, fontSize: 14 }}>Tipo de meta:</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <button type="button" onClick={() => setNewGoal(g => ({ ...g, kind: 'target' }))}
-                  style={{ padding: 12, border: newGoal.kind === 'target' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: newGoal.kind === 'target' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: newGoal.kind === 'target' ? 'bold' : 'normal' }}>
-                  🎯 Valor alvo<br /><span style={{ fontSize: 11, color: '#666' }}>Ex: Viagem, compra</span>
-                </button>
-                <button type="button" onClick={() => setNewGoal(g => ({ ...g, kind: 'monthly' }))}
-                  style={{ padding: 12, border: newGoal.kind === 'monthly' ? '2px solid #9b59b6' : '1px solid #ddd', borderRadius: 8, backgroundColor: newGoal.kind === 'monthly' ? '#f3e5f5' : 'white', cursor: 'pointer', fontWeight: newGoal.kind === 'monthly' ? 'bold' : 'normal' }}>
-                  📅 Meta mensal<br /><span style={{ fontSize: 11, color: '#666' }}>Ex: Guardar R$500/mês</span>
-                </button>
-              </div>
+        {/* Cards de resumo — agora com juros */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 32 }}>
+          <div style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Total Gasto</div>
+            <div style={{ fontSize: 28, fontWeight: 'bold' }}>R$ {totalSpent.toFixed(2)}</div>
+          </div>
+          <div style={{ background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Média por Dia</div>
+            <div style={{ fontSize: 28, fontWeight: 'bold' }}>R$ {avgPerDay.toFixed(2)}</div>
+          </div>
+          <div style={{ background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
+            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Top Categoria</div>
+            <div style={{ fontSize: 24, fontWeight: 'bold' }}>{topCategory || 'N/A'}</div>
+          </div>
+          <div style={{
+            background: totalInterestPaid > 0
+              ? 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)'
+              : 'linear-gradient(135deg, #2ecc71 0%, #27ae60 100%)',
+            padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+          }}>
+            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Juros Pagos</div>
+            <div style={{ fontSize: 28, fontWeight: 'bold' }}>R$ {totalInterestPaid.toFixed(2)}</div>
+            <div style={{ fontSize: 12, opacity: 0.8 }}>
+              {totalInterestPaid > 0 ? `${interestTransactions.length} compra(s) com juros` : '✅ Sem juros'}
             </div>
+          </div>
+        </div>
 
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6, fontSize: 14 }}>Nome:</label>
-              <input type="text" placeholder={newGoal.kind === 'monthly' ? 'Ex: Guardar para investimento' : 'Ex: Viagem para Europa'}
-                value={newGoal.name} onChange={e => setNewGoal(g => ({ ...g, name: e.target.value }))}
-                style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #ddd', fontSize: 15 }} />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-              {newGoal.kind === 'target' ? (
-                <div>
-                  <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6, fontSize: 14 }}>Valor alvo (R$):</label>
-                  <input type="number" placeholder="5000" value={newGoal.target}
-                    onChange={e => setNewGoal(g => ({ ...g, target: e.target.value }))}
-                    min="0.01" step="0.01"
-                    style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #ddd', fontSize: 15 }} />
-                </div>
-              ) : (
-                <div>
-                  <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6, fontSize: 14 }}>Meta por mês (R$):</label>
-                  <input type="number" placeholder="500" value={newGoal.monthlyTarget}
-                    onChange={e => setNewGoal(g => ({ ...g, monthlyTarget: e.target.value }))}
-                    min="0.01" step="0.01"
-                    style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #ddd', fontSize: 15 }} />
-                  {newGoal.monthlyTarget && (
-                    <div style={{ fontSize: 11, color: '#9b59b6', marginTop: 4 }}>
-                      Em 12 meses: R$ {(parseFloat(newGoal.monthlyTarget) * 12).toFixed(2)}
+        {/* Detalhamento de juros — só aparece se houver */}
+        {totalInterestPaid > 0 && (
+          <div style={{ backgroundColor: '#fdecea', border: '2px solid #e74c3c', borderRadius: 12, padding: 20, marginBottom: 32 }}>
+            <h2 style={{ marginTop: 0, marginBottom: 16, color: '#c0392b' }}>📈 Detalhamento de Juros</h2>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {interestTransactions.map((t, i) => {
+                const interest = Number(t.total_with_interest) - Number(t.original_amount);
+                const interestPct = ((interest / Number(t.original_amount)) * 100).toFixed(1);
+                return (
+                  <div key={i} style={{ backgroundColor: 'white', padding: 12, borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: '1px solid #f5b7b1' }}>
+                    <div>
+                      <div style={{ fontWeight: 'bold' }}>{t.description}</div>
+                      <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
+                        {new Date(t.date + 'T12:00:00').toLocaleDateString('pt-BR')}
+                        {' · '}{t.installments_count}x de R$ {Number(t.installment_value).toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#888', marginTop: 1 }}>
+                        Original: R$ {Number(t.original_amount).toFixed(2)} → Total: R$ {Number(t.total_with_interest).toFixed(2)}
+                      </div>
                     </div>
-                  )}
-                </div>
-              )}
-              <div>
-                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6, fontSize: 14 }}>Prazo (opcional):</label>
-                <input type="date" value={newGoal.deadline}
-                  onChange={e => setNewGoal(g => ({ ...g, deadline: e.target.value }))}
-                  style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid #ddd', fontSize: 14 }} />
-              </div>
+                    <div style={{ textAlign: 'right', minWidth: 80 }}>
+                      <div style={{ fontWeight: 'bold', color: '#e74c3c', fontSize: 16 }}>
+                        +R$ {interest.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#e74c3c' }}>+{interestPct}%</div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8, fontSize: 14 }}>Visibilidade:</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <button type="button" onClick={() => setNewGoal(g => ({ ...g, type: 'individual' }))}
-                  style={{ padding: 12, border: newGoal.type === 'individual' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: newGoal.type === 'individual' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: newGoal.type === 'individual' ? 'bold' : 'normal' }}>
-                  👤 Individual<br /><span style={{ fontSize: 11, color: '#666' }}>Só pra mim</span>
-                </button>
-                <button type="button" onClick={() => setNewGoal(g => ({ ...g, type: 'shared' }))}
-                  style={{ padding: 12, border: newGoal.type === 'shared' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: newGoal.type === 'shared' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: newGoal.type === 'shared' ? 'bold' : 'normal' }}>
-                  👫 Casal<br /><span style={{ fontSize: 11, color: '#666' }}>Compartilhada</span>
-                </button>
-              </div>
-            </div>
-
-            {errorMsg && (
-              <div style={{ color: '#e74c3c', backgroundColor: '#fde8e8', border: '1px solid #f5c6cb', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 13 }}>❌ {errorMsg}</div>
-            )}
-
-            <button type="submit" disabled={creating}
-              style={{ width: '100%', padding: '12px', backgroundColor: creating ? '#95a5a6' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: creating ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: 15 }}>
-              {creating ? '⏳ Criando...' : '✅ Criar meta'}
-            </button>
-          </form>
-        )}
-
-        {/* Metas mensais em destaque */}
-        {(() => {
-          const monthly = goals.filter(g => (g as any).kind === 'monthly' || false);
-          if (monthly.length === 0) return null;
-          return (
-            <section style={{ marginBottom: 28 }}>
-              <h3 style={{ color: '#7b1fa2', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>📅 Metas mensais</h3>
-              {monthly.map(g => <GoalCard key={g.id} goal={g} />)}
-            </section>
-          );
-        })()}
-
-        {sharedGoals.filter(g => !(g as any).kind || (g as any).kind === 'target').length > 0 && (
-          <section style={{ marginBottom: 28 }}>
-            <h3 style={{ color: '#666', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>👫 Metas do casal</h3>
-            {sharedGoals.filter(g => !(g as any).kind || (g as any).kind === 'target').map(g => <GoalCard key={g.id} goal={g} />)}
-          </section>
-        )}
-
-        {individualGoals.filter(g => !(g as any).kind || (g as any).kind === 'target').length > 0 && (
-          <section>
-            <h3 style={{ color: '#666', fontSize: 13, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>👤 Suas metas individuais</h3>
-            {individualGoals.filter(g => !(g as any).kind || (g as any).kind === 'target').map(g => <GoalCard key={g.id} goal={g} />)}
-          </section>
-        )}
-
-        {goals.length === 0 && !showCreateForm && (
-          <div style={{ textAlign: 'center', padding: 48, color: '#666', border: '1px dashed #ddd', borderRadius: 12 }}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>🎯</div>
-            <h3>Nenhuma meta ainda</h3>
-            <p style={{ fontSize: 14 }}>Crie uma meta de valor alvo ou de economia mensal.</p>
           </div>
         )}
+
+        {/* Insights */}
+        <div style={{ backgroundColor: '#fff3cd', border: '2px solid #ffc107', borderRadius: 12, padding: 20, marginBottom: 32 }}>
+          <h2 style={{ marginTop: 0, marginBottom: 16 }}>💡 Insights Inteligentes</h2>
+          <div style={{ display: 'grid', gap: 12 }}>
+            {insights.map((insight, i) => (
+              <div key={i} style={{ backgroundColor: 'white', padding: 12, borderRadius: 8, fontSize: 15, border: '1px solid #f39c12' }}>
+                {insight}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {categoryData.length > 0 && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 24, marginBottom: 32 }}>
+              <div style={{ backgroundColor: 'white', padding: 24, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                <h3 style={{ marginTop: 0, marginBottom: 16 }}>🥧 Gastos por Categoria</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie data={categoryData} cx="50%" cy="50%" labelLine={false} label={renderCustomizedLabel} outerRadius={100} fill="#8884d8" dataKey="value">
+                      {categoryData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : 'R$ 0.00'} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div style={{ marginTop: 16 }}>
+                  {categoryData.map((cat, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 14 }}>
+                      <div style={{ width: 16, height: 16, backgroundColor: cat.color, borderRadius: 4 }} />
+                      <span>{cat.icon} {cat.name}</span>
+                      <span style={{ marginLeft: 'auto', fontWeight: 'bold' }}>R$ {cat.value.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {monthlyData.length > 0 && (
+                <div style={{ backgroundColor: 'white', padding: 24, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
+                  <h3 style={{ marginTop: 0, marginBottom: 16 }}>📈 Evolução Mensal</h3>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <LineChart data={monthlyData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="month" />
+                      <YAxis />
+                      <Tooltip formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : 'R$ 0.00'} />
+                      <Line type="monotone" dataKey="amount" stroke="#8884d8" strokeWidth={3} dot={{ r: 6, fill: '#8884d8' }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div style={{ backgroundColor: 'white', padding: 24, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', marginBottom: 24 }}>
+              <h3 style={{ marginTop: 0, marginBottom: 16 }}>🏆 Ranking de Categorias</h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={categoryData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis />
+                  <Tooltip formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : 'R$ 0.00'} />
+                  <Bar dataKey="value" radius={[8, 8, 0, 0]}>
+                    {categoryData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
+
+        <div style={{ textAlign: 'center' }}>
+          <Link href="/dashboard">
+            <button style={{ padding: '12px 24px', fontSize: 16 }}>⬅️ Voltar ao Dashboard</button>
+          </Link>
+        </div>
       </main>
     </>
   );
