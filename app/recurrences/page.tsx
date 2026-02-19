@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Header from '@/app/components/Header';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
 type RecurrenceType = 'fixed' | 'variable';
 
@@ -35,6 +36,7 @@ export default function RecurrencesPage() {
   const [activeTab, setActiveTab] = useState<RecurrenceType>('fixed');
   const [variableAmounts, setVariableAmounts] = useState<Record<string, string>>({});
   const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
   useEffect(() => {
     async function init() {
@@ -72,16 +74,12 @@ export default function RecurrencesPage() {
   }
 
   async function loadCards(hid: string) {
-    const { data } = await supabase
-      .from('credit_cards').select('*')
-      .eq('household_id', hid).order('name');
+    const { data } = await supabase.from('credit_cards').select('*').eq('household_id', hid).order('name');
     setCreditCards(data || []);
   }
 
   async function loadAccounts(hid: string) {
-    const { data } = await supabase
-      .from('accounts').select('*')
-      .eq('household_id', hid).order('name');
+    const { data } = await supabase.from('accounts').select('*').eq('household_id', hid).order('name');
     setAccounts(data || []);
   }
 
@@ -103,16 +101,9 @@ export default function RecurrencesPage() {
       .maybeSingle();
 
     if (existing) {
-      await supabase.from('invoices')
-        .update({ total: Number(existing.total) + amount })
-        .eq('id', existing.id);
+      await supabase.from('invoices').update({ total: Number(existing.total) + amount }).eq('id', existing.id);
     } else {
-      await supabase.from('invoices').insert({
-        credit_card_id: creditCardId,
-        month,
-        total: amount,
-        status: 'open',
-      });
+      await supabase.from('invoices').insert({ credit_card_id: creditCardId, month, total: amount, status: 'open' });
     }
   }
 
@@ -131,7 +122,7 @@ export default function RecurrencesPage() {
     if (nextDateBase <= today) nextDateBase.setMonth(nextDateBase.getMonth() + 1);
     const nextDate = nextDateBase.toISOString().split('T')[0];
 
-    const payload: any = {
+    const base: any = {
       household_id: householdId,
       user_id: userId,
       name: formData.name.trim(),
@@ -148,6 +139,8 @@ export default function RecurrencesPage() {
       account_id: formData.payment_method !== 'credit_card' && formData.account_id ? formData.account_id : null,
     };
 
+    const payload = await encryptRecord(base);
+
     if (editingId) {
       await supabase.from('recurrence_rules').update(payload).eq('id', editingId);
     } else {
@@ -162,7 +155,7 @@ export default function RecurrencesPage() {
     if (!householdId || !userId) return;
     const today = new Date().toISOString().split('T')[0];
 
-    const { error } = await supabase.from('transactions').insert({
+    const txBase = {
       household_id: householdId,
       user_id: userId,
       payer_id: userId,
@@ -173,11 +166,13 @@ export default function RecurrencesPage() {
       split: 'shared',
       is_recurring: true,
       account_id: r.account_id || null,
-    });
+    };
+
+    const txPayload = await encryptRecord(txBase);
+    const { error } = await supabase.from('transactions').insert(txPayload);
 
     if (error) { alert('Erro: ' + error.message); return; }
 
-    // Se cartão → lança na fatura correta
     if (r.payment_method === 'credit_card' && r.credit_card_id && r.credit_cards?.closing_day) {
       const invoiceMonth = calculateInvoiceMonth(today, r.credit_cards.closing_day);
       await upsertInvoice(r.credit_card_id, invoiceMonth, r.amount);
@@ -199,7 +194,7 @@ export default function RecurrencesPage() {
       last_updated: today,
     }).eq('id', id);
 
-    await supabase.from('transactions').insert({
+    const txBase = {
       household_id: householdId,
       user_id: userId,
       payer_id: userId,
@@ -210,9 +205,11 @@ export default function RecurrencesPage() {
       split: 'shared',
       is_recurring: true,
       account_id: rule?.account_id || null,
-    });
+    };
 
-    // Se cartão → lança na fatura
+    const txPayload = await encryptRecord(txBase);
+    await supabase.from('transactions').insert(txPayload);
+
     if (rule?.payment_method === 'credit_card' && rule?.credit_card_id && rule?.credit_cards?.closing_day) {
       const invoiceMonth = calculateInvoiceMonth(today, rule.credit_cards.closing_day);
       await upsertInvoice(rule.credit_card_id, invoiceMonth, amount);
@@ -281,7 +278,6 @@ export default function RecurrencesPage() {
       <Header title="Recorrências" backHref="/dashboard" />
       <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
 
-        {/* Resumo */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
           <div style={{ backgroundColor: '#f0f4ff', borderRadius: 12, padding: 16, border: '1px solid #dde' }}>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 4 }}>📋 Total fixas</div>
@@ -302,7 +298,6 @@ export default function RecurrencesPage() {
           </div>
         </div>
 
-        {/* Alertas de vencimento próximo */}
         {(() => {
           const urgent = recurrences.filter(r => {
             if (r.recurrence_type !== 'fixed') return false;
@@ -335,52 +330,44 @@ export default function RecurrencesPage() {
           );
         })()}
 
-        {/* Botão nova recorrência */}
         {!showForm && (
-          <button
-            onClick={() => { setShowForm(true); setFormData({ ...emptyForm, type: activeTab }); }}
-            style={{ width: '100%', padding: '12px', marginBottom: 20, backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 'bold', fontSize: 15 }}
-          >
+          <button onClick={() => { setShowForm(true); setFormData({ ...emptyForm, type: activeTab }); }}
+            style={{ width: '100%', padding: '12px', marginBottom: 20, backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 'bold', fontSize: 15 }}>
             ➕ Nova recorrência
           </button>
         )}
 
-        {/* Formulário */}
         {showForm && (
           <div style={{ border: '2px solid #3498db', borderRadius: 12, padding: 20, marginBottom: 24, backgroundColor: '#f8fbff' }}>
             <h3 style={{ margin: '0 0 16px' }}>{editingId ? '✏️ Editar' : '➕ Nova'} recorrência</h3>
 
-            {/* Tipo */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
               {(['fixed', 'variable'] as RecurrenceType[]).map(t => (
                 <button key={t} type="button"
                   onClick={() => setFormData({ ...formData, type: t })}
-                  style={{ padding: 12, border: formData.type === t ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.type === t ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: formData.type === t ? 'bold' : 'normal' }}
-                >
+                  style={{ padding: 12, border: formData.type === t ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.type === t ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: formData.type === t ? 'bold' : 'normal' }}>
                   {t === 'fixed' ? '📋 Fixa (assinatura)' : '📊 Variável (água, luz)'}
                 </button>
               ))}
             </div>
 
             <form onSubmit={handleSubmit}>
-              {/* Nome */}
               <div style={{ marginBottom: 12 }}>
                 <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Nome:</label>
                 <input type="text" value={formData.name}
                   onChange={e => setFormData({ ...formData, name: e.target.value })}
                   placeholder={formData.type === 'fixed' ? 'Ex: Netflix, Spotify...' : 'Ex: Conta de luz, Água...'}
-                  required style={{ width: '100%', padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }}
-                />
+                  required style={{ width: '100%', padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }} />
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
                   {(formData.type === 'fixed' ? FIXED_EXAMPLES : VARIABLE_EXAMPLES).map(ex => (
                     <button key={ex} type="button" onClick={() => setFormData({ ...formData, name: ex })}
-                      style={{ padding: '3px 8px', fontSize: 12, backgroundColor: '#f0f0f0', border: '1px solid #ddd', borderRadius: 20, cursor: 'pointer' }}
-                    >{ex}</button>
+                      style={{ padding: '3px 8px', fontSize: 12, backgroundColor: '#f0f0f0', border: '1px solid #ddd', borderRadius: 20, cursor: 'pointer' }}>
+                      {ex}
+                    </button>
                   ))}
                 </div>
               </div>
 
-              {/* Valor e dia */}
               <div style={{ display: 'grid', gridTemplateColumns: formData.type === 'fixed' ? '1fr 1fr' : '1fr', gap: 12, marginBottom: 12 }}>
                 {formData.type === 'fixed' && (
                   <div>
@@ -388,8 +375,7 @@ export default function RecurrencesPage() {
                     <input type="number" value={formData.amount}
                       onChange={e => setFormData({ ...formData, amount: e.target.value })}
                       placeholder="0.00" step="0.01" min="0" required
-                      style={{ width: '100%', padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }}
-                    />
+                      style={{ width: '100%', padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }} />
                   </div>
                 )}
                 <div>
@@ -404,17 +390,14 @@ export default function RecurrencesPage() {
                 </div>
               </div>
 
-              {/* Categoria */}
               <div style={{ marginBottom: 16 }}>
                 <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Categoria (opcional):</label>
                 <input type="text" value={formData.category}
                   onChange={e => setFormData({ ...formData, category: e.target.value })}
                   placeholder="Ex: Moradia, Lazer..."
-                  style={{ width: '100%', padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }}
-                />
+                  style={{ width: '100%', padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }} />
               </div>
 
-              {/* Forma de pagamento */}
               <div style={{ marginBottom: 16 }}>
                 <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>Forma de pagamento:</label>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
@@ -426,15 +409,13 @@ export default function RecurrencesPage() {
                   ] as const).map(([val, label]) => (
                     <button key={val} type="button"
                       onClick={() => setFormData({ ...formData, payment_method: val, credit_card_id: '', account_id: '' })}
-                      style={{ padding: 10, border: formData.payment_method === val ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.payment_method === val ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: formData.payment_method === val ? 'bold' : 'normal', fontSize: 12 }}
-                    >
+                      style={{ padding: 10, border: formData.payment_method === val ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.payment_method === val ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: formData.payment_method === val ? 'bold' : 'normal', fontSize: 12 }}>
                       {label}
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* Seletor de cartão — aparece só se credit_card */}
               {isCreditCard && (
                 <div style={{ marginBottom: 16, backgroundColor: '#f0f4ff', padding: 14, borderRadius: 8, border: '1px solid #c5cae9' }}>
                   <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8, color: '#5c35a0' }}>
@@ -450,22 +431,12 @@ export default function RecurrencesPage() {
                         {creditCards.map(card => (
                           <button key={card.id} type="button"
                             onClick={() => setFormData({ ...formData, credit_card_id: card.id })}
-                            style={{
-                              padding: 10,
-                              border: formData.credit_card_id === card.id ? '2px solid #9b59b6' : '1px solid #ddd',
-                              borderRadius: 8,
-                              backgroundColor: formData.credit_card_id === card.id ? '#f3e5f5' : 'white',
-                              cursor: 'pointer', textAlign: 'left',
-                              fontWeight: formData.credit_card_id === card.id ? 'bold' : 'normal',
-                            }}
-                          >
+                            style={{ padding: 10, border: formData.credit_card_id === card.id ? '2px solid #9b59b6' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.credit_card_id === card.id ? '#f3e5f5' : 'white', cursor: 'pointer', textAlign: 'left', fontWeight: formData.credit_card_id === card.id ? 'bold' : 'normal' }}>
                             <div style={{ fontSize: 13 }}>💳 {card.name}</div>
                             <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>Fecha dia {card.closing_day}</div>
                           </button>
                         ))}
                       </div>
-
-                      {/* Preview da fatura */}
                       {selectedCard && (
                         <div style={{ backgroundColor: '#fff3cd', padding: 8, borderRadius: 6, fontSize: 12 }}>
                           📄 Cobranças do dia {formData.due_day} cairão na fatura de{' '}
@@ -484,7 +455,6 @@ export default function RecurrencesPage() {
                 </div>
               )}
 
-              {/* Conta a debitar — opcional para não-cartão */}
               {!isCreditCard && accounts.length > 0 && (
                 <div style={{ marginBottom: 16 }}>
                   <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 6 }}>🏦 Conta a debitar (opcional):</label>
@@ -513,7 +483,6 @@ export default function RecurrencesPage() {
           </div>
         )}
 
-        {/* Tabs */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid #ddd', borderRadius: 8, marginBottom: 20, overflow: 'hidden' }}>
           {(['fixed', 'variable'] as RecurrenceType[]).map(t => (
             <button key={t} onClick={() => setActiveTab(t)}
@@ -523,7 +492,6 @@ export default function RecurrencesPage() {
           ))}
         </div>
 
-        {/* Lista fixas */}
         {activeTab === 'fixed' && (
           <>
             {fixed.length === 0 ? (
@@ -549,9 +517,7 @@ export default function RecurrencesPage() {
                       Todo dia {r.due_day} · {urgency}
                     </div>
                     {isCc && r.credit_cards?.name && (
-                      <div style={{ fontSize: 12, color: '#9b59b6', marginTop: 3 }}>
-                        💳 {r.credit_cards.name}
-                      </div>
+                      <div style={{ fontSize: 12, color: '#9b59b6', marginTop: 3 }}>💳 {r.credit_cards.name}</div>
                     )}
                   </div>
                   <div style={{ textAlign: 'right' }}>
@@ -575,7 +541,6 @@ export default function RecurrencesPage() {
           </>
         )}
 
-        {/* Lista variáveis */}
         {activeTab === 'variable' && (
           <>
             {variable.length === 0 ? (
@@ -617,14 +582,12 @@ export default function RecurrencesPage() {
                       {isCc ? '💳 Lançar valor na fatura:' : '💸 Lançar valor deste mês:'}
                     </label>
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <input
-                        type="number"
+                      <input type="number"
                         placeholder={r.last_variable_amount ? `Último: R$ ${Number(r.last_variable_amount).toFixed(2)}` : 'R$ 0.00'}
                         value={variableAmounts[r.id] || ''}
                         onChange={e => setVariableAmounts(prev => ({ ...prev, [r.id]: e.target.value }))}
                         step="0.01" min="0"
-                        style={{ flex: 1, padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }}
-                      />
+                        style={{ flex: 1, padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }} />
                       <button onClick={() => saveVariableAmount(r.id)}
                         style={{ padding: '10px 16px', backgroundColor: isCc ? '#9b59b6' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
                         {isCc ? '💳 Lançar' : '✅ Lançar'}

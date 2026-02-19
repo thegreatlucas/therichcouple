@@ -5,46 +5,32 @@ import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Header from '@/app/components/Header';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
-const INCOME_TYPES = [
-  { value: 'salary', label: '💼 Salário' },
-  { value: 'vr', label: '🍽️ Vale Refeição' },
-  { value: 'va', label: '🛒 Vale Alimentação' },
-  { value: 'freelance', label: '💻 Freelance' },
-  { value: 'bonus', label: '🎯 Bônus' },
-  { value: 'investment', label: '📈 Rendimento' },
-  { value: 'other', label: '❓ Outro' },
-];
-
-const RECURRENCE_OPTIONS = [
-  { value: 'monthly', label: '📅 Todo mês' },
-  { value: 'annual', label: '📆 Anual (IPVA/IPTU)' },
-  { value: 'once', label: '1️⃣ Único' },
-];
-
-// Tipos que devem obrigatoriamente vincular a uma conta separada
-const VOUCHER_TYPES = ['vr', 'va'];
-
-export default function IncomesPage() {
-  const [incomes, setIncomes] = useState<any[]>([]);
+export default function FinancingsPage() {
+  const [financings, setFinancings] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [householdId, setHouseholdId] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [totalMonthly, setTotalMonthly] = useState(0);
-  const [totalVoucher, setTotalVoucher] = useState(0);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [intermediaries, setIntermediaries] = useState<Record<string, any[]>>({});
+  const [showIntermediaryForm, setShowIntermediaryForm] = useState<string | null>(null);
+  const [intermediaryForm, setIntermediaryForm] = useState({ amount: '', due_date: '' });
   const [formData, setFormData] = useState({
-    description: '',
-    amount: '',
-    type: 'salary',
-    recurrence: 'monthly',
-    month: new Date().toISOString().slice(0, 7),
+    name: '',
+    total_amount: '',
+    installment_amount: '',
+    total_installments: '',
+    paid_installments: '0',
+    start_date: new Date().toISOString().split('T')[0],
+    due_day: '',
     account_id: '',
-    installments: '1',
   });
   const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
   useEffect(() => {
     async function init() {
@@ -62,7 +48,7 @@ export default function IncomesPage() {
       setHouseholdId(member.household_id);
 
       await Promise.all([
-        loadIncomes(member.household_id, user.id),
+        loadFinancings(member.household_id),
         loadAccounts(member.household_id),
       ]);
       setLoading(false);
@@ -70,27 +56,13 @@ export default function IncomesPage() {
     init();
   }, []);
 
-  async function loadIncomes(hid: string, uid: string) {
+  async function loadFinancings(hid: string) {
     const { data } = await supabase
-      .from('incomes')
-      .select('*, accounts(name, type)')
+      .from('financings')
+      .select('*, accounts(name)')
       .eq('household_id', hid)
-      .eq('user_id', uid)
-      .order('month', { ascending: false });
-
-    setIncomes(data || []);
-
-    // Separa receitas normais de vouchers
-    const monthly = (data || [])
-      .filter(i => i.recurrence === 'monthly' && !VOUCHER_TYPES.includes(i.type))
-      .reduce((sum, i) => sum + Number(i.amount), 0);
-
-    const voucher = (data || [])
-      .filter(i => i.recurrence === 'monthly' && VOUCHER_TYPES.includes(i.type))
-      .reduce((sum, i) => sum + Number(i.amount), 0);
-
-    setTotalMonthly(monthly);
-    setTotalVoucher(voucher);
+      .order('created_at', { ascending: false });
+    setFinancings(data || []);
   }
 
   async function loadAccounts(hid: string) {
@@ -100,6 +72,26 @@ export default function IncomesPage() {
       .eq('household_id', hid)
       .order('name');
     setAccounts(data || []);
+  }
+
+  async function loadIntermediaries(financingId: string) {
+    const { data } = await supabase
+      .from('financing_intermediaries')
+      .select('*')
+      .eq('financing_id', financingId)
+      .order('due_date');
+    setIntermediaries(prev => ({ ...prev, [financingId]: data || [] }));
+  }
+
+  async function toggleExpanded(financingId: string) {
+    if (expandedId === financingId) {
+      setExpandedId(null);
+    } else {
+      setExpandedId(financingId);
+      if (!intermediaries[financingId]) {
+        await loadIntermediaries(financingId);
+      }
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -116,53 +108,136 @@ export default function IncomesPage() {
 
     if (!member) return;
 
-    // Valida que vouchers têm conta vinculada
-    if (VOUCHER_TYPES.includes(formData.type) && !formData.account_id) {
-      alert('Vale Refeição/Alimentação precisa estar vinculado a uma conta. Crie uma conta do tipo &quot;Vale Refeição&quot; primeiro.');
-      return;
-    }
-
-    const payload = {
-      household_id: member.household_id,
-      user_id: user.id,
-      description: formData.description,
-      amount: parseFloat(formData.amount),
-      type: formData.type,
-      recurrence: formData.recurrence,
-      installments: parseInt(formData.installments) || 1,
-      month: formData.month + '-01',
+    const base = {
+      name: formData.name,
+      total_amount: parseFloat(formData.total_amount),
+      installment_amount: parseFloat(formData.installment_amount),
+      total_installments: parseInt(formData.total_installments),
+      paid_installments: parseInt(formData.paid_installments),
+      start_date: formData.start_date,
+      due_day: parseInt(formData.due_day),
       account_id: formData.account_id || null,
+      household_id: member.household_id,
+      owner_id: user.id,
     };
 
+    const payload = await encryptRecord(base);
+
     if (editingId) {
-      const { error } = await supabase.from('incomes').update(payload).eq('id', editingId);
+      const { error } = await supabase.from('financings').update(payload).eq('id', editingId);
       if (error) { alert('Erro ao atualizar: ' + error.message); return; }
     } else {
-      const { error } = await supabase.from('incomes').insert(payload);
+      const { error } = await supabase.from('financings').insert(payload);
       if (error) { alert('Erro ao criar: ' + error.message); return; }
     }
 
     resetForm();
-    await loadIncomes(member.household_id, user.id);
+    await loadFinancings(member.household_id);
   }
 
-  async function handleDelete(id: string, description: string) {
-    if (!confirm(`Deletar "${description}"?`)) return;
-    const { error } = await supabase.from('incomes').delete().eq('id', id);
+  async function handleAddIntermediary(financingId: string) {
+    if (!intermediaryForm.amount || !intermediaryForm.due_date) {
+      alert('Preencha o valor e a data.');
+      return;
+    }
+
+    const { error } = await supabase.from('financing_intermediaries').insert({
+      financing_id: financingId,
+      amount: parseFloat(intermediaryForm.amount),
+      due_date: intermediaryForm.due_date,
+    });
+
+    if (error) { alert('Erro ao adicionar intermediária: ' + error.message); return; }
+
+    setIntermediaryForm({ amount: '', due_date: '' });
+    setShowIntermediaryForm(null);
+    await loadIntermediaries(financingId);
+  }
+
+  async function handlePayIntermediary(intermediary: any, financingId: string) {
+    if (!confirm(`Marcar intermediária de R$ ${Number(intermediary.amount).toFixed(2)} como paga?`)) return;
+
+    const today = new Date().toISOString().split('T')[0];
+    const { error } = await supabase
+      .from('financing_intermediaries')
+      .update({ paid: true, paid_date: today })
+      .eq('id', intermediary.id);
+
     if (error) { alert('Erro: ' + error.message); return; }
-    if (householdId && userId) loadIncomes(householdId, userId);
+
+    if (userId && householdId && intermediary.financing_id) {
+      const financing = financings.find(f => f.id === financingId);
+      const txBase = {
+        household_id: householdId,
+        account_id: financing?.account_id || null,
+        user_id: userId,
+        payer_id: userId,
+        amount: intermediary.amount,
+        description: `${financing?.name || 'Financiamento'} — Intermediária`,
+        date: today,
+        payment_method: 'transfer',
+        split: 'individual',
+        is_recurring: false,
+      };
+      const txPayload = await encryptRecord(txBase);
+      await supabase.from('transactions').insert(txPayload);
+    }
+
+    await loadIntermediaries(financingId);
   }
 
-  function startEdit(income: any) {
-    setEditingId(income.id);
+  async function handleDeleteIntermediary(id: string, financingId: string) {
+    if (!confirm('Deletar esta intermediária?')) return;
+    const { error } = await supabase.from('financing_intermediaries').delete().eq('id', id);
+    if (error) { alert('Erro: ' + error.message); return; }
+    await loadIntermediaries(financingId);
+  }
+
+  async function handlePayInstallment(financing: any) {
+    if (!confirm(`Registrar pagamento da parcela ${financing.paid_installments + 1}/${financing.total_installments}?`)) return;
+
+    const newPaid = financing.paid_installments + 1;
+    const { error } = await supabase.from('financings').update({ paid_installments: newPaid }).eq('id', financing.id);
+    if (error) { alert('Erro: ' + error.message); return; }
+
+    if (userId && financing.account_id && householdId) {
+      const txBase = {
+        household_id: householdId,
+        account_id: financing.account_id,
+        user_id: userId,
+        payer_id: userId,
+        amount: financing.installment_amount,
+        description: `${financing.name} — Parcela ${newPaid}/${financing.total_installments}`,
+        date: new Date().toISOString().split('T')[0],
+        payment_method: 'transfer',
+        split: 'individual',
+        is_recurring: true,
+      };
+      const txPayload = await encryptRecord(txBase);
+      await supabase.from('transactions').insert(txPayload);
+    }
+
+    if (householdId) loadFinancings(householdId);
+  }
+
+  async function handleDelete(id: string, name: string) {
+    if (!confirm(`Deletar o financiamento "${name}"? Isso também apagará todas as intermediárias.`)) return;
+    const { error } = await supabase.from('financings').delete().eq('id', id);
+    if (error) { alert('Erro: ' + error.message); return; }
+    if (householdId) loadFinancings(householdId);
+  }
+
+  function startEdit(f: any) {
+    setEditingId(f.id);
     setFormData({
-      description: income.description,
-      amount: income.amount.toString(),
-      type: income.type,
-      recurrence: income.recurrence,
-      installments: income.installments?.toString() || '1',
-      month: income.month.slice(0, 7),
-      account_id: income.account_id || '',
+      name: f.name,
+      total_amount: f.total_amount.toString(),
+      installment_amount: f.installment_amount.toString(),
+      total_installments: f.total_installments.toString(),
+      paid_installments: f.paid_installments.toString(),
+      start_date: f.start_date,
+      due_day: f.due_day.toString(),
+      account_id: f.account_id || '',
     });
     setShowForm(true);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -171,185 +246,127 @@ export default function IncomesPage() {
   function resetForm() {
     setEditingId(null);
     setFormData({
-      description: '',
-      amount: '',
-      type: 'salary',
-      recurrence: 'monthly',
-      month: new Date().toISOString().slice(0, 7),
+      name: '',
+      total_amount: '',
+      installment_amount: '',
+      total_installments: '',
+      paid_installments: '0',
+      start_date: new Date().toISOString().split('T')[0],
+      due_day: '',
       account_id: '',
-      installments: '1',
     });
     setShowForm(false);
   }
 
-  function getTypeLabel(type: string) {
-    return INCOME_TYPES.find(t => t.value === type)?.label || type;
+  function getProgress(paid: number, total: number) { return Math.round((paid / total) * 100); }
+  function getRemainingAmount(f: any) { return (f.total_installments - f.paid_installments) * f.installment_amount; }
+  function getNextDueDate(f: any) {
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth(), f.due_day);
+    if (next <= now) next.setMonth(next.getMonth() + 1);
+    return next.toLocaleDateString('pt-BR');
   }
-
-  const isVoucherType = VOUCHER_TYPES.includes(formData.type);
-
-  // Agrupa por mês
-  const grouped = incomes.reduce((acc, income) => {
-    const month = income.month.slice(0, 7);
-    if (!acc[month]) acc[month] = [];
-    acc[month].push(income);
-    return acc;
-  }, {} as Record<string, any[]>);
-
-  const monthKeys = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+  function getIntermediaryStatus(intermediaries: any[]) {
+    if (!intermediaries || intermediaries.length === 0) return null;
+    const pending = intermediaries.filter(i => !i.paid);
+    const total = intermediaries.reduce((sum, i) => sum + Number(i.amount), 0);
+    const paid = intermediaries.filter(i => i.paid).reduce((sum, i) => sum + Number(i.amount), 0);
+    return { pending: pending.length, total: intermediaries.length, totalAmount: total, paidAmount: paid };
+  }
 
   if (loading) return <main style={{ padding: 16 }}>Carregando...</main>;
 
   return (
     <>
-      <Header title="Renda" backHref="/dashboard" />
-      <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <h1>💰 Receitas</h1>
+      <Header title="Financiamentos" backHref="/dashboard" />
+      <main style={{ padding: 16, maxWidth: 900, margin: '0 auto' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1>🏦 Financiamentos</h1>
         <button
           onClick={() => { resetForm(); setShowForm(!showForm); }}
           style={{ padding: '8px 16px', fontSize: 16, backgroundColor: showForm ? '#e74c3c' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}
         >
-          {showForm ? '✖️ Cancelar' : '➕ Nova receita'}
+          {showForm ? '✖️ Cancelar' : '➕ Novo financiamento'}
         </button>
       </div>
 
-      {/* Resumo */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
-        <div style={{ background: 'linear-gradient(135deg, #2ecc71, #27ae60)', padding: 16, borderRadius: 12, color: 'white' }}>
-          <div style={{ fontSize: 12, opacity: 0.9 }}>Renda mensal (dinheiro)</div>
-          <div style={{ fontSize: 22, fontWeight: 'bold' }}>R$ {totalMonthly.toFixed(2)}</div>
-        </div>
-        <div style={{ background: 'linear-gradient(135deg, #f39c12, #e67e22)', padding: 16, borderRadius: 12, color: 'white' }}>
-          <div style={{ fontSize: 12, opacity: 0.9 }}>Vale Refeição/Alimentação</div>
-          <div style={{ fontSize: 22, fontWeight: 'bold' }}>R$ {totalVoucher.toFixed(2)}</div>
-          <div style={{ fontSize: 11, opacity: 0.8, marginTop: 2 }}>Saldo separado</div>
-        </div>
-        <div style={{ background: 'linear-gradient(135deg, #3498db, #2980b9)', padding: 16, borderRadius: 12, color: 'white' }}>
-          <div style={{ fontSize: 12, opacity: 0.9 }}>Total de lançamentos</div>
-          <div style={{ fontSize: 22, fontWeight: 'bold' }}>{incomes.length}</div>
-        </div>
-      </div>
-
-      {/* Formulário */}
       {showForm && (
         <form onSubmit={handleSubmit} style={{ backgroundColor: '#f5f5f5', padding: 20, borderRadius: 8, marginBottom: 24 }}>
-          <h3 style={{ marginTop: 0 }}>{editingId ? 'Editar Receita' : 'Nova Receita'}</h3>
+          <h3 style={{ marginTop: 0 }}>{editingId ? 'Editar Financiamento' : 'Novo Financiamento'}</h3>
 
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Descrição:</label>
-            <input
-              type="text" value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              placeholder="Ex: Salário CLT, VR Empresa X..."
-              style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }}
-              required
-            />
+            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Nome:</label>
+            <input type="text" value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              placeholder="Ex: Apartamento Centro, Carro Onix..."
+              style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }} required />
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
             <div>
-              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Valor:</label>
-              <input
-                type="number" value={formData.amount}
-                onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Valor total:</label>
+              <input type="number" value={formData.total_amount}
+                onChange={(e) => setFormData({ ...formData, total_amount: e.target.value })}
                 placeholder="0.00" step="0.01" min="0"
-                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }}
-                required
-              />
+                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }} required />
             </div>
             <div>
-              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Mês de referência:</label>
-              <input
-                type="month" value={formData.month}
-                onChange={(e) => setFormData({ ...formData, month: e.target.value })}
-                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }}
-                required
-              />
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Valor da parcela:</label>
+              <input type="number" value={formData.installment_amount}
+                onChange={(e) => setFormData({ ...formData, installment_amount: e.target.value })}
+                placeholder="0.00" step="0.01" min="0"
+                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }} required />
             </div>
           </div>
 
-          {/* Tipo */}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>Tipo:</label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8 }}>
-              {INCOME_TYPES.map((t) => (
-                <button key={t.value} type="button"
-                  onClick={() => setFormData({ ...formData, type: t.value, account_id: '' })}
-                  style={{ padding: 10, border: formData.type === t.value ? '2px solid #2ecc71' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.type === t.value ? '#e8f8f0' : 'white', cursor: 'pointer', fontWeight: formData.type === t.value ? 'bold' : 'normal', fontSize: 13 }}
-                >
-                  {t.label}
-                </button>
-              ))}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Total de parcelas:</label>
+              <input type="number" value={formData.total_installments}
+                onChange={(e) => setFormData({ ...formData, total_installments: e.target.value })}
+                placeholder="Ex: 48" min="1"
+                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }} required />
+            </div>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Já pagas:</label>
+              <input type="number" value={formData.paid_installments}
+                onChange={(e) => setFormData({ ...formData, paid_installments: e.target.value })}
+                placeholder="0" min="0"
+                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }} />
+            </div>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Dia de vencimento:</label>
+              <input type="number" value={formData.due_day}
+                onChange={(e) => setFormData({ ...formData, due_day: e.target.value })}
+                placeholder="Ex: 15" min="1" max="31"
+                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }} required />
             </div>
           </div>
 
-          {/* Conta vinculada — obrigatória para VR/VA, opcional para outros */}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>
-              {isVoucherType ? '🏦 Conta do vale (obrigatório):' : '🏦 Creditar em conta (opcional):'}
-            </label>
-            {isVoucherType && (
-              <div style={{ backgroundColor: '#fff3cd', padding: 10, borderRadius: 6, marginBottom: 8, fontSize: 13 }}>
-                ⚠️ VR/VA são saldos separados. Vincule a uma conta do tipo &quot;Vale Refeição&quot; para controlar o saldo corretamente.
-                {accounts.filter(a => a.type === 'meal_voucher' || a.type === 'food_voucher').length === 0 && (
-                  <span> <Link href="/accounts" style={{ color: '#3498db' }}>Criar conta VR →</Link></span>
-                )}
-              </div>
-            )}
-            <select
-              value={formData.account_id}
-              onChange={(e) => setFormData({ ...formData, account_id: e.target.value })}
-              style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: `1px solid ${isVoucherType && !formData.account_id ? '#e74c3c' : '#ccc'}` }}
-              required={isVoucherType}
-            >
-              <option value="">{isVoucherType ? 'Selecione a conta do vale...' : 'Nenhuma (não vincular)'}</option>
-              {accounts.map((acc) => (
-                <option key={acc.id} value={acc.id}>{acc.name} ({acc.type})</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Recorrência */}
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>Recorrência:</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {RECURRENCE_OPTIONS.map((r) => (
-                <button key={r.value} type="button"
-                  onClick={() => setFormData({ ...formData, recurrence: r.value })}
-                  style={{ padding: 12, border: formData.recurrence === r.value ? '2px solid #2ecc71' : '1px solid #ddd', borderRadius: 8, backgroundColor: formData.recurrence === r.value ? '#e8f8f0' : 'white', cursor: 'pointer', fontWeight: formData.recurrence === r.value ? 'bold' : 'normal' }}
-                >
-                  {r.label}
-                </button>
-              ))}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Data de início:</label>
+              <input type="date" value={formData.start_date}
+                onChange={(e) => setFormData({ ...formData, start_date: e.target.value })}
+                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }} required />
+            </div>
+            <div>
+              <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Conta de débito:</label>
+              <select value={formData.account_id}
+                onChange={(e) => setFormData({ ...formData, account_id: e.target.value })}
+                style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }}>
+                <option value="">Selecione uma conta...</option>
+                {accounts.map((acc) => (
+                  <option key={acc.id} value={acc.id}>{acc.name}</option>
+                ))}
+              </select>
             </div>
           </div>
 
-          {/* Parcelamento para receitas anuais */}
-          {formData.recurrence === 'annual' && (
-            <div style={{ marginBottom: 16, padding: 12, backgroundColor: '#f0f8ff', borderRadius: 8, border: '1px solid #3498db' }}>
-              <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>📋 Parcelamento:</label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <div>
-                  <label style={{ fontSize: 13, color: '#666' }}>Parcelas:</label>
-                  <select
-                    value={formData.installments}
-                    onChange={(e) => setFormData({ ...formData, installments: e.target.value })}
-                    style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 6, border: '1px solid #ccc', marginTop: 4 }}
-                  >
-                    {[1,2,3,4,5,6,7,8,9,10,11,12].map(n => (
-                      <option key={n} value={n}>{n === 1 ? 'À vista' : `${n}x`}</option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 2 }}>
-                  <p style={{ fontSize: 12, color: '#3498db', margin: 0 }}>
-                    {formData.installments === '1'
-                      ? 'Pago de uma vez'
-                      : `${formData.installments}x de R$ ${formData.amount ? (parseFloat(formData.amount) / parseInt(formData.installments)).toFixed(2) : '0.00'}`}
-                  </p>
-                </div>
-              </div>
+          {formData.total_amount && formData.installment_amount && formData.total_installments && (
+            <div style={{ backgroundColor: '#e3f2fd', padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 14 }}>
+              <strong>📊 Resumo:</strong> Saldo devedor: <strong>R$ {((parseInt(formData.total_installments) - parseInt(formData.paid_installments || '0')) * parseFloat(formData.installment_amount || '0')).toFixed(2)}</strong>
+              {' · '} Parcelas restantes: <strong>{parseInt(formData.total_installments) - parseInt(formData.paid_installments || '0')}</strong>
             </div>
           )}
 
@@ -364,57 +381,181 @@ export default function IncomesPage() {
         </form>
       )}
 
-      {/* Lista agrupada por mês */}
-      {incomes.length === 0 ? (
-        <p style={{ textAlign: 'center', color: '#666', padding: 32 }}>Nenhuma receita cadastrada ainda.</p>
+      {financings.length === 0 ? (
+        <p style={{ textAlign: 'center', color: '#666', padding: 32 }}>Nenhum financiamento cadastrado ainda.</p>
       ) : (
-        monthKeys.map((monthKey) => {
-          const monthIncomes = grouped[monthKey];
-          const monthCash = monthIncomes.filter((i: any) => !VOUCHER_TYPES.includes(i.type)).reduce((s: number, i: any) => s + Number(i.amount), 0);
-          const monthVoucher = monthIncomes.filter((i: any) => VOUCHER_TYPES.includes(i.type)).reduce((s: number, i: any) => s + Number(i.amount), 0);
-          const monthLabel = new Date(monthKey + '-15').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+        financings.map((f) => {
+          const progress = getProgress(f.paid_installments, f.total_installments);
+          const remaining = f.total_installments - f.paid_installments;
+          const isFinished = remaining === 0;
+          const isExpanded = expandedId === f.id;
+          const inters = intermediaries[f.id] || [];
+          const interStatus = getIntermediaryStatus(inters);
 
           return (
-            <div key={monthKey} style={{ marginBottom: 24 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingBottom: 8, borderBottom: '2px solid #eee' }}>
-                <h3 style={{ margin: 0, textTransform: 'capitalize' }}>{monthLabel}</h3>
-                <div style={{ textAlign: 'right' }}>
-                  {monthCash > 0 && <div style={{ color: '#2ecc71', fontWeight: 'bold', fontSize: 14 }}>💵 R$ {monthCash.toFixed(2)}</div>}
-                  {monthVoucher > 0 && <div style={{ color: '#f39c12', fontWeight: 'bold', fontSize: 14 }}>🍽️ R$ {monthVoucher.toFixed(2)}</div>}
+            <div key={f.id} style={{ border: '1px solid #ddd', marginBottom: 16, borderRadius: 12, backgroundColor: 'white', overflow: 'hidden' }}>
+              <div style={{ padding: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontWeight: 'bold', fontSize: 20 }}>{f.name}</div>
+                    <div style={{ fontSize: 13, color: '#666', marginTop: 2 }}>
+                      {f.accounts?.name && `Débito em: ${f.accounts.name} · `}
+                      Vence todo dia <strong>{f.due_day}</strong>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    {isFinished ? (
+                      <span style={{ backgroundColor: '#2ecc71', color: 'white', padding: '4px 10px', borderRadius: 20, fontSize: 13, fontWeight: 'bold' }}>✅ Quitado</span>
+                    ) : (
+                      <span style={{ backgroundColor: '#e74c3c', color: 'white', padding: '4px 10px', borderRadius: 20, fontSize: 13, fontWeight: 'bold' }}>
+                        Próx: {getNextDueDate(f)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                    <span>{f.paid_installments}/{f.total_installments} parcelas pagas</span>
+                    <span>{progress}%</span>
+                  </div>
+                  <div style={{ backgroundColor: '#eee', borderRadius: 8, height: 10, overflow: 'hidden' }}>
+                    <div style={{ backgroundColor: isFinished ? '#2ecc71' : '#3498db', height: '100%', width: `${progress}%`, borderRadius: 8 }} />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+                  <div style={{ backgroundColor: '#f8f9fa', padding: 10, borderRadius: 8, textAlign: 'center' }}>
+                    <div style={{ fontSize: 11, color: '#666' }}>Parcela</div>
+                    <div style={{ fontWeight: 'bold', color: '#e74c3c' }}>R$ {Number(f.installment_amount).toFixed(2)}</div>
+                  </div>
+                  <div style={{ backgroundColor: '#f8f9fa', padding: 10, borderRadius: 8, textAlign: 'center' }}>
+                    <div style={{ fontSize: 11, color: '#666' }}>Saldo devedor</div>
+                    <div style={{ fontWeight: 'bold', color: '#e74c3c' }}>R$ {getRemainingAmount(f).toFixed(2)}</div>
+                  </div>
+                  <div style={{ backgroundColor: '#f8f9fa', padding: 10, borderRadius: 8, textAlign: 'center' }}>
+                    <div style={{ fontSize: 11, color: '#666' }}>Total</div>
+                    <div style={{ fontWeight: 'bold' }}>R$ {Number(f.total_amount).toFixed(2)}</div>
+                  </div>
+                </div>
+
+                {interStatus && (
+                  <div style={{ marginBottom: 12, fontSize: 13, color: interStatus.pending > 0 ? '#e67e22' : '#2ecc71', fontWeight: 'bold' }}>
+                    🏢 {interStatus.pending > 0 ? `${interStatus.pending} intermediária(s) pendente(s)` : 'Todas intermediárias pagas'}
+                    {' · '}Total: R$ {interStatus.totalAmount.toFixed(2)}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {!isFinished && (
+                    <button onClick={() => handlePayInstallment(f)}
+                      style={{ padding: '8px 16px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold', fontSize: 14 }}>
+                      💰 Pagar parcela {f.paid_installments + 1}
+                    </button>
+                  )}
+                  <button onClick={() => toggleExpanded(f.id)}
+                    style={{ padding: '8px 16px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>
+                    🏢 {isExpanded ? 'Ocultar' : 'Ver'} intermediárias
+                  </button>
+                  <button onClick={() => startEdit(f)}
+                    style={{ padding: '8px 12px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                    ✏️ Editar
+                  </button>
+                  <button onClick={() => handleDelete(f.id, f.name)}
+                    style={{ padding: '8px 12px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                    🗑️
+                  </button>
                 </div>
               </div>
 
-              {monthIncomes.map((income: any) => (
-                <div key={income.id} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: 12, marginBottom: 8, borderRadius: 8,
-                  backgroundColor: VOUCHER_TYPES.includes(income.type) ? '#fffbf0' : 'white',
-                  border: `1px solid ${VOUCHER_TYPES.includes(income.type) ? '#f39c12' : '#ddd'}`
-                }}>
-                  <div>
-                    <div style={{ fontWeight: 'bold' }}>{income.description}</div>
-                    <div style={{ fontSize: 13, color: '#666' }}>
-                      {getTypeLabel(income.type)}
-                      {income.recurrence === 'monthly' && <span style={{ marginLeft: 8, color: '#3498db' }}>· Mensal</span>}
-                      {income.recurrence === 'annual' && (
-                        <span style={{ marginLeft: 8, color: '#9b59b6' }}>
-                          · Anual {income.installments > 1 ? `· ${income.installments}x de R$ ${(Number(income.amount)/income.installments).toFixed(2)}` : '· À vista'}
-                        </span>
-                      )}
-                      {income.accounts?.name && <span style={{ marginLeft: 8, color: '#9b59b6' }}>· {income.accounts.name}</span>}
+              {isExpanded && (
+                <div style={{ borderTop: '1px solid #eee', backgroundColor: '#fafafa', padding: 20 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                    <h3 style={{ margin: 0 }}>🏢 Intermediárias</h3>
+                    <button
+                      onClick={() => setShowIntermediaryForm(showIntermediaryForm === f.id ? null : f.id)}
+                      style={{ padding: '6px 14px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 14 }}>
+                      {showIntermediaryForm === f.id ? '✖️ Cancelar' : '➕ Adicionar'}
+                    </button>
+                  </div>
+
+                  {showIntermediaryForm === f.id && (
+                    <div style={{ backgroundColor: 'white', padding: 16, borderRadius: 8, marginBottom: 16, border: '1px solid #ddd' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 12, alignItems: 'end' }}>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold', fontSize: 13 }}>Valor:</label>
+                          <input type="number" value={intermediaryForm.amount}
+                            onChange={(e) => setIntermediaryForm({ ...intermediaryForm, amount: e.target.value })}
+                            placeholder="0.00" step="0.01" min="0"
+                            style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 4, border: '1px solid #ccc' }} />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold', fontSize: 13 }}>Data de vencimento:</label>
+                          <input type="date" value={intermediaryForm.due_date}
+                            onChange={(e) => setIntermediaryForm({ ...intermediaryForm, due_date: e.target.value })}
+                            style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 4, border: '1px solid #ccc' }} />
+                        </div>
+                        <button onClick={() => handleAddIntermediary(f.id)}
+                          style={{ padding: '8px 16px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}>
+                          ➕ Salvar
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span style={{ fontWeight: 'bold', fontSize: 16, color: VOUCHER_TYPES.includes(income.type) ? '#f39c12' : '#2ecc71' }}>
-                      R$ {Number(income.amount).toFixed(2)}
-                    </span>
-                    <button onClick={() => startEdit(income)}
-                      style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>✏️</button>
-                    <button onClick={() => handleDelete(income.id, income.description)}
-                      style={{ padding: '6px 10px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>🗑️</button>
-                  </div>
+                  )}
+
+                  {inters.length === 0 ? (
+                    <p style={{ color: '#666', fontSize: 14, textAlign: 'center', padding: 16 }}>Nenhuma intermediária cadastrada.</p>
+                  ) : (
+                    inters.map((inter) => {
+                      const isOverdue = !inter.paid && inter.due_date < new Date().toISOString().split('T')[0];
+                      return (
+                        <div key={inter.id} style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: 12, marginBottom: 8, borderRadius: 8,
+                          backgroundColor: inter.paid ? '#f0fff4' : isOverdue ? '#fff5f5' : 'white',
+                          border: `1px solid ${inter.paid ? '#2ecc71' : isOverdue ? '#e74c3c' : '#ddd'}`
+                        }}>
+                          <div>
+                            <div style={{ fontWeight: 'bold', fontSize: 16, color: inter.paid ? '#2ecc71' : '#e74c3c' }}>
+                              R$ {Number(inter.amount).toFixed(2)}
+                            </div>
+                            <div style={{ fontSize: 13, color: '#666' }}>
+                              Vence: {new Date(inter.due_date + 'T12:00:00').toLocaleDateString('pt-BR')}
+                              {inter.paid && inter.paid_date && (
+                                <span style={{ color: '#2ecc71', marginLeft: 8 }}>
+                                  · Pago em {new Date(inter.paid_date + 'T12:00:00').toLocaleDateString('pt-BR')}
+                                </span>
+                              )}
+                              {isOverdue && <span style={{ color: '#e74c3c', marginLeft: 8, fontWeight: 'bold' }}>· VENCIDA</span>}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            {!inter.paid && (
+                              <button onClick={() => handlePayIntermediary(inter, f.id)}
+                                style={{ padding: '6px 12px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                                ✅ Pagar
+                              </button>
+                            )}
+                            {inter.paid && <span style={{ fontSize: 12, color: '#2ecc71', fontWeight: 'bold', padding: '6px 0' }}>✅ Paga</span>}
+                            <button onClick={() => handleDeleteIntermediary(inter.id, f.id)}
+                              style={{ padding: '6px 10px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+
+                  {inters.length > 0 && (
+                    <div style={{ marginTop: 12, padding: 12, backgroundColor: '#e3f2fd', borderRadius: 8, fontSize: 13 }}>
+                      <strong>Total intermediárias:</strong> R$ {inters.reduce((s, i) => s + Number(i.amount), 0).toFixed(2)}
+                      {' · '}<strong>Pagas:</strong> R$ {inters.filter(i => i.paid).reduce((s, i) => s + Number(i.amount), 0).toFixed(2)}
+                      {' · '}<strong>Pendentes:</strong> R$ {inters.filter(i => !i.paid).reduce((s, i) => s + Number(i.amount), 0).toFixed(2)}
+                    </div>
+                  )}
                 </div>
-              ))}
+              )}
             </div>
           );
         })

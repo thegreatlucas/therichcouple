@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../../../lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
 export default function NewTransaction() {
   const [user, setUser] = useState<any>(null);
@@ -30,6 +31,7 @@ export default function NewTransaction() {
   const [installmentValue, setInstallmentValue] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
   useEffect(() => {
     async function loadData() {
@@ -91,7 +93,6 @@ export default function NewTransaction() {
     return new Date(isoMonth + 'T12:00:00').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
   }
 
-  // Valores derivados calculados em tempo real
   const originalAmount = parseFloat(amount || '0');
   const numInstallments = parseInt(installments || '1');
   const instValue = parseFloat(installmentValue || '0');
@@ -129,8 +130,7 @@ export default function NewTransaction() {
       .eq('household_id', selectedHousehold);
     const otherUserId = members?.find((m: any) => m.user_id !== user.id)?.user_id;
 
-    // Monta payload com campos de juros
-    const txPayload: any = {
+    const txBase: any = {
       household_id: selectedHousehold,
       account_id: paymentMethod !== 'credit' ? accountId : null,
       user_id: user.id,
@@ -147,14 +147,16 @@ export default function NewTransaction() {
     };
 
     if (isParcelado) {
-      txPayload.installments_count = numInstallments;
-      txPayload.installment_value = hasInterest && instValue > 0
+      txBase.installments_count = numInstallments;
+      txBase.installment_value = hasInterest && instValue > 0
         ? instValue
         : originalAmount / numInstallments;
       if (hasInterest && totalWithInterest > 0) {
-        txPayload.total_with_interest = totalWithInterest;
+        txBase.total_with_interest = totalWithInterest;
       }
     }
+
+    const txPayload = await encryptRecord(txBase);
 
     const { data: newTx, error: transError } = await supabase
       .from('transactions').insert(txPayload).select().single();
@@ -245,9 +247,7 @@ export default function NewTransaction() {
       <form onSubmit={handleSubmit}>
         {/* Valor original */}
         <div style={{ marginBottom: 20 }}>
-          <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>
-            💰 Valor original da compra:
-          </label>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>💰 Valor original da compra:</label>
           <input
             type="number" value={amount}
             onChange={(e) => setAmount(e.target.value)}
@@ -308,8 +308,7 @@ export default function NewTransaction() {
         {/* Data */}
         <div style={{ marginBottom: 20 }}>
           <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>📅 Data:</label>
-          <input
-            type="date" value={date}
+          <input type="date" value={date}
             onChange={(e) => setDate(e.target.value)}
             style={{ width: '100%', padding: 12, fontSize: 16, borderRadius: 8, border: '1px solid #ddd' }}
             required
@@ -345,7 +344,7 @@ export default function NewTransaction() {
           </div>
         </div>
 
-        {/* Cartão — só aparece se crédito */}
+        {/* Cartão */}
         {paymentMethod === 'credit' && (
           <div style={{ marginBottom: 20, backgroundColor: '#f0f4ff', padding: 16, borderRadius: 8, border: '1px solid #c5cae9' }}>
             <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>💳 Cartão:</label>
@@ -380,7 +379,6 @@ export default function NewTransaction() {
                   </div>
                 )}
 
-                {/* À vista ou parcelado */}
                 <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8, fontSize: 14 }}>Forma de compra:</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
                   {([['avista', '💳 À vista'], ['parcelado', '📊 Parcelado']] as const).map(([val, label]) => (
@@ -422,14 +420,12 @@ export default function NewTransaction() {
                       </div>
                     </div>
 
-                    {/* Sem juros */}
                     {!hasInterest && amount && (
                       <div style={{ backgroundColor: '#e8f8f0', padding: 10, borderRadius: 6, fontSize: 13, textAlign: 'center' }}>
                         ✅ {installments}x de <strong>{formatCurrency(originalAmount / numInstallments)}</strong> sem juros
                       </div>
                     )}
 
-                    {/* Com juros */}
                     {hasInterest && (
                       <div>
                         <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>
@@ -563,7 +559,6 @@ export default function NewTransaction() {
           </div>
         )}
 
-        {/* Botões */}
         <div style={{ display: 'flex', gap: 12 }}>
           <button type="submit" disabled={loading}
             style={{ flex: 1, padding: '16px 24px', fontSize: 18, fontWeight: 'bold', backgroundColor: loading ? '#95a5a6' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: loading ? 'not-allowed' : 'pointer' }}

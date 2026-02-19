@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Header from '@/app/components/Header';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
 export default function CategoriesPage() {
   const [categories, setCategories] = useState<any[]>([]);
@@ -18,6 +19,7 @@ export default function CategoriesPage() {
     color: '#3498db'
   });
   const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
   const iconOptions = ['🍔', '🚗', '🏠', '💡', '🎮', '👕', '💊', '✈️', '🎬', '📚', '🏋️', '🐶', '💰', '🎁', '📱'];
   const colorOptions = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#34495e', '#e67e22'];
@@ -33,7 +35,6 @@ export default function CategoriesPage() {
       return;
     }
 
-    // Busca o household do usuário
     const { data: memberData, error: memberError } = await supabase
       .from('household_members')
       .select('household_id')
@@ -47,20 +48,20 @@ export default function CategoriesPage() {
     }
 
     setHouseholdId(memberData.household_id);
-    loadCategories();
+    // BUG FIX: passa o id diretamente em vez de depender do estado
+    loadCategories(memberData.household_id);
   }
 
-  async function loadCategories(hid?: string) {
-    const id = hid || householdId;
-    if (!id) return;
+  async function loadCategories(hid: string) {
     const { data, error } = await supabase
       .from('categories')
       .select('*')
-      .eq('household_id', id)
+      .eq('household_id', hid)
       .order('name');
 
     if (error) {
       console.error('Erro ao carregar categorias:', error);
+      setLoading(false);
       return;
     }
 
@@ -76,12 +77,8 @@ export default function CategoriesPage() {
       return;
     }
 
-    // Busca user e household_id frescos no momento do submit
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      router.push('/login');
-      return;
-    }
+    if (!user) { router.push('/login'); return; }
 
     const { data: memberData, error: memberError } = await supabase
       .from('household_members')
@@ -97,58 +94,40 @@ export default function CategoriesPage() {
     const currentHouseholdId = memberData.household_id;
 
     if (editingId) {
-      // Atualizar
+      const payload = await encryptRecord({
+        name: formData.name,
+        icon: formData.icon,
+        color: formData.color,
+      });
       const { error } = await supabase
         .from('categories')
-        .update({
-          name: formData.name,
-          icon: formData.icon,
-          color: formData.color
-        })
+        .update(payload)
         .eq('id', editingId);
 
-      if (error) {
-        alert('Erro ao atualizar categoria: ' + error.message);
-        return;
-      }
+      if (error) { alert('Erro ao atualizar categoria: ' + error.message); return; }
     } else {
-      // Criar nova — household_id obrigatório para a RLS policy
-      const { error } = await supabase
-        .from('categories')
-        .insert({
-          name: formData.name,
-          icon: formData.icon,
-          color: formData.color,
-          household_id: currentHouseholdId
-        });
-
-      if (error) {
-        alert('Erro ao criar categoria: ' + error.message);
-        return;
-      }
+      const payload = await encryptRecord({
+        name: formData.name,
+        icon: formData.icon,
+        color: formData.color,
+        household_id: currentHouseholdId,
+      });
+      const { error } = await supabase.from('categories').insert(payload);
+      if (error) { alert('Erro ao criar categoria: ' + error.message); return; }
     }
 
-    // Reset form
     setFormData({ name: '', icon: '📁', color: '#3498db' });
     setEditingId(null);
     setShowForm(false);
-    loadCategories();
+    loadCategories(currentHouseholdId);
   }
 
   async function handleDelete(id: string, name: string) {
     if (!confirm(`Tem certeza que deseja deletar a categoria "${name}"?`)) return;
 
-    const { error } = await supabase
-      .from('categories')
-      .delete()
-      .eq('id', id);
-
-    if (error) {
-      alert('Erro ao deletar: ' + error.message);
-      return;
-    }
-
-    loadCategories();
+    const { error } = await supabase.from('categories').delete().eq('id', id);
+    if (error) { alert('Erro ao deletar: ' + error.message); return; }
+    if (householdId) loadCategories(householdId);
   }
 
   function startEdit(category: any) {
@@ -193,45 +172,29 @@ export default function CategoriesPage() {
         </button>
       </div>
 
-      {/* Formulário */}
       {showForm && (
         <form
           onSubmit={handleSubmit}
-          style={{
-            backgroundColor: '#f5f5f5',
-            padding: 20,
-            borderRadius: 8,
-            marginBottom: 24
-          }}
+          style={{ backgroundColor: '#f5f5f5', padding: 20, borderRadius: 8, marginBottom: 24 }}
         >
           <h3 style={{ marginTop: 0 }}>
             {editingId ? 'Editar Categoria' : 'Nova Categoria'}
           </h3>
 
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>
-              Nome:
-            </label>
+            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Nome:</label>
             <input
               type="text"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               placeholder="Ex: Alimentação"
-              style={{
-                width: '100%',
-                padding: 8,
-                fontSize: 16,
-                borderRadius: 4,
-                border: '1px solid #ccc'
-              }}
+              style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }}
               required
             />
           </div>
 
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>
-              Ícone:
-            </label>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>Ícone:</label>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {iconOptions.map((icon) => (
                 <button
@@ -254,9 +217,7 @@ export default function CategoriesPage() {
           </div>
 
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>
-              Cor:
-            </label>
+            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>Cor:</label>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {colorOptions.map((color) => (
                 <button
@@ -279,30 +240,14 @@ export default function CategoriesPage() {
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               type="submit"
-              style={{
-                padding: '10px 20px',
-                fontSize: 16,
-                backgroundColor: '#2ecc71',
-                color: 'white',
-                border: 'none',
-                borderRadius: 8,
-                cursor: 'pointer'
-              }}
+              style={{ padding: '10px 20px', fontSize: 16, backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}
             >
               {editingId ? '💾 Salvar' : '➕ Criar'}
             </button>
             <button
               type="button"
               onClick={cancelEdit}
-              style={{
-                padding: '10px 20px',
-                fontSize: 16,
-                backgroundColor: '#95a5a6',
-                color: 'white',
-                border: 'none',
-                borderRadius: 8,
-                cursor: 'pointer'
-              }}
+              style={{ padding: '10px 20px', fontSize: 16, backgroundColor: '#95a5a6', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}
             >
               Cancelar
             </button>
@@ -310,7 +255,6 @@ export default function CategoriesPage() {
         </form>
       )}
 
-      {/* Lista de categorias */}
       <div>
         {categories.length === 0 ? (
           <p style={{ textAlign: 'center', color: '#666', padding: 32 }}>
@@ -357,27 +301,13 @@ export default function CategoriesPage() {
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   onClick={() => startEdit(cat)}
-                  style={{
-                    padding: '8px 12px',
-                    backgroundColor: '#3498db',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: 4,
-                    cursor: 'pointer'
-                  }}
+                  style={{ padding: '8px 12px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
                 >
                   ✏️ Editar
                 </button>
                 <button
                   onClick={() => handleDelete(cat.id, cat.name)}
-                  style={{
-                    padding: '8px 12px',
-                    backgroundColor: '#e74c3c',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: 4,
-                    cursor: 'pointer'
-                  }}
+                  style={{ padding: '8px 12px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
                 >
                   🗑️
                 </button>
@@ -389,9 +319,7 @@ export default function CategoriesPage() {
 
       <div style={{ marginTop: 24 }}>
         <Link href="/dashboard">
-          <button style={{ padding: '12px 24px', fontSize: 16 }}>
-            ⬅️ Voltar ao Dashboard
-          </button>
+          <button style={{ padding: '12px 24px', fontSize: 16 }}>⬅️ Voltar ao Dashboard</button>
         </Link>
       </div>
     </main>
