@@ -540,7 +540,8 @@ export default function NewTransaction() {
           )}
         </div>
 
-        {/* Recorrência */}
+        {/* Recorrência — oculta para crédito parcelado */}
+        {!(paymentMethod === 'credit' && creditPaymentType === 'parcelado') && (
         <div style={{ marginBottom: 24, backgroundColor: '#f8f9fa', padding: 16, borderRadius: 8, border: '1px solid #ddd' }}>
           <label style={{ display: 'block', marginBottom: 12, fontWeight: 'bold' }}>🔁 Recorrência:</label>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
@@ -586,6 +587,7 @@ export default function NewTransaction() {
               )}
             </div>
           )}
+        )}
         )}
 
         {/* Botões */}
