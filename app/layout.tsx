@@ -1,5 +1,5 @@
 import './globals.css';
-import type { Metadata, Viewport } from 'next';
+import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import { CryptoProvider } from '@/lib/cryptoContext';
 import { ThemeProvider } from '@/lib/themeContext';
@@ -11,6 +11,9 @@ export const metadata: Metadata = {
   title: 'The Rich Couple',
   description: 'Gerenciador financeiro do casal',
   manifest: '/manifest.json',
+  // @ts-ignore — themeColor é válido em runtime mesmo sem tipagem no Next 13
+  themeColor: '#2ecc71',
+  viewport: 'width=device-width, initial-scale=1',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
@@ -23,12 +26,6 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     images: [{ url: 'https://bolt.new/static/og_default.png' }],
   },
-};
-
-export const viewport: Viewport = {
-  themeColor: '#2ecc71',
-  width: 'device-width',
-  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
