@@ -16,6 +16,7 @@ export default function SetupPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [userName, setUserName] = useState('');
   const router = useRouter();
 
   useEffect(() => {
@@ -25,6 +26,7 @@ export default function SetupPage() {
   async function checkExistingHousehold() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
+    setUserName(user.user_metadata?.name || '');
 
     const { data: member } = await supabase
       .from('household_members')
