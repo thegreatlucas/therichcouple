@@ -586,8 +586,6 @@ export default function NewTransaction() {
               )}
             </div>
           )}
-        </div>
-
         )}
 
         {/* Botões */}
