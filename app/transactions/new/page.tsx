@@ -25,6 +25,10 @@ export default function NewTransaction() {
   const [recurringFrequency, setRecurringFrequency] = useState('monthly');
   const [recurringDayOfMonth, setRecurringDayOfMonth] = useState('');
   const [invoiceMonth, setInvoiceMonth] = useState('');
+  const [creditPaymentType, setCreditPaymentType] = useState<'avista' | 'parcelado'>('avista');
+  const [installments, setInstallments] = useState('2');
+  const [hasInterest, setHasInterest] = useState(false);
+  const [installmentValue, setInstallmentValue] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
@@ -111,6 +115,10 @@ export default function NewTransaction() {
     setRecurringDayOfMonth('');
     setCreditCardId(creditCards[0]?.id || '');
     setInvoiceMonth('');
+    setCreditPaymentType('avista');
+    setInstallments('2');
+    setHasInterest(false);
+    setInstallmentValue('');
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -118,6 +126,10 @@ export default function NewTransaction() {
 
     if (!selectedHousehold) { alert('⚠️ Selecione um casal'); return; }
     if (!amount || parseFloat(amount) <= 0) { alert('⚠️ Digite um valor válido'); return; }
+    const finalAmount = paymentMethod === 'credit' && creditPaymentType === 'parcelado' && hasInterest && installmentValue
+      ? parseFloat(installmentValue) * parseInt(installments)
+      : parseFloat(amount);
+    const interestTotal = finalAmount - parseFloat(amount);
     if (!description.trim()) { alert('⚠️ Digite uma descrição'); return; }
     if (paymentMethod !== 'credit' && !accountId) { alert('⚠️ Selecione uma conta'); return; }
     if (paymentMethod === 'credit' && !creditCardId) { alert('⚠️ Selecione um cartão'); return; }
@@ -140,7 +152,7 @@ export default function NewTransaction() {
         user_id: user.id,
         payer_id: user.id,
         category_id: categoryId || null,
-        amount: parseFloat(amount),
+        amount: finalAmount,
         description: description.trim(),
         date: date,
         payment_method: paymentMethod,
@@ -169,13 +181,14 @@ export default function NewTransaction() {
       if (existingInvoice) {
         await supabase
           .from('invoices')
-          .update({ total: Number(existingInvoice.total) + parseFloat(amount) })
+          .update({ total: Number(existingInvoice.total) + finalAmount })
           .eq('id', existingInvoice.id);
       } else {
         await supabase.from('invoices').insert({
           credit_card_id: creditCardId,
           month: invoiceMonth,
-          total: parseFloat(amount),
+          total: finalAmount,
+          installments: paymentMethod === 'credit' && creditPaymentType === 'parcelado' ? parseInt(installments) : 1,
           status: 'open',
         });
       }
@@ -405,10 +418,77 @@ export default function NewTransaction() {
                 </div>
 
                 {selectedCard && invoiceMonth && (
-                  <div style={{ backgroundColor: '#fff3cd', padding: 10, borderRadius: 8, fontSize: 13 }}>
+                  <div style={{ backgroundColor: '#fff3cd', padding: 10, borderRadius: 8, fontSize: 13, marginBottom: 12 }}>
                     📄 Esta compra cairá na fatura de <strong>{getInvoiceMonthLabel(invoiceMonth)}</strong>
                   </div>
                 )}
+
+                {/* À vista ou parcelado */}
+                <div style={{ marginTop: 8 }}>
+                  <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8, fontSize: 14 }}>Forma de compra:</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+                    {([['avista', '💳 À vista'], ['parcelado', '📊 Parcelado']] as const).map(([val, label]) => (
+                      <button key={val} type="button"
+                        onClick={() => setCreditPaymentType(val)}
+                        style={{ padding: 10, border: creditPaymentType === val ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: creditPaymentType === val ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: creditPaymentType === val ? 'bold' : 'normal', fontSize: 13 }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {creditPaymentType === 'parcelado' && (
+                    <div style={{ backgroundColor: '#f8f9ff', borderRadius: 8, padding: 12, border: '1px solid #dde' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
+                        <div>
+                          <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Parcelas:</label>
+                          <select value={installments} onChange={e => setInstallments(e.target.value)}
+                            style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 6, border: '1px solid #ccc' }}
+                          >
+                            {[2,3,4,5,6,7,8,9,10,11,12,18,24].map(n => (
+                              <option key={n} value={n}>{n}x</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Juros:</label>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            {([false, true] as const).map(v => (
+                              <button key={String(v)} type="button"
+                                onClick={() => { setHasInterest(v); if (!v) setInstallmentValue(''); }}
+                                style={{ flex: 1, padding: 8, border: hasInterest === v ? '2px solid #e74c3c' : '1px solid #ddd', borderRadius: 6, backgroundColor: hasInterest === v ? (v ? '#fde8e8' : '#e8f8f0') : 'white', cursor: 'pointer', fontSize: 12, fontWeight: hasInterest === v ? 'bold' : 'normal' }}
+                              >
+                                {v ? '📈 Com juros' : '✅ Sem juros'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {!hasInterest && amount && (
+                        <div style={{ backgroundColor: '#e8f8f0', padding: 10, borderRadius: 6, fontSize: 13, textAlign: 'center' }}>
+                          ✅ {installments}x de <strong>R$ {(parseFloat(amount || '0') / parseInt(installments)).toFixed(2)}</strong> sem juros
+                        </div>
+                      )}
+
+                      {hasInterest && (
+                        <div>
+                          <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Valor de cada parcela (R$):</label>
+                          <input type="number" value={installmentValue} onChange={e => setInstallmentValue(e.target.value)}
+                            placeholder="Ex: 85.90" step="0.01" min="0"
+                            style={{ width: '100%', padding: 8, fontSize: 15, borderRadius: 6, border: '1px solid #e74c3c' }}
+                          />
+                          {installmentValue && amount && (
+                            <div style={{ backgroundColor: '#fde8e8', padding: 10, borderRadius: 6, fontSize: 13, marginTop: 8 }}>
+                              📈 Total com juros: <strong>R$ {(parseFloat(installmentValue) * parseInt(installments)).toFixed(2)}</strong>
+                              {' · '}💸 Juros: <strong style={{ color: '#e74c3c' }}>R$ {((parseFloat(installmentValue) * parseInt(installments)) - parseFloat(amount || '0')).toFixed(2)}</strong>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -507,6 +587,8 @@ export default function NewTransaction() {
             </div>
           )}
         </div>
+
+        )}
 
         {/* Botões */}
         <div style={{ display: 'flex', gap: 12 }}>
