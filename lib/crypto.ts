@@ -54,7 +54,7 @@ export async function generateHouseholdKey(): Promise<CryptoKey> {
 // Exporta CryptoKey → base64 (para guardar criptografada)
 export async function exportKey(key: CryptoKey): Promise<string> {
   const raw = await crypto.subtle.exportKey('raw', key);
-  return btoa(String.fromCharCode(...new Uint8Array(raw)));
+  return btoa(String.fromCharCode(...Array.from(new Uint8Array(raw))));
 }
 
 // Importa base64 → CryptoKey
