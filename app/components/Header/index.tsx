@@ -1,7 +1,8 @@
 'use client';
+// app/components/Header/index.tsx — Com dark mode toggle
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import ThemeToggle from '@/app/components/ThemeToggle';
 
 interface HeaderProps {
   title: string;
@@ -10,15 +11,13 @@ interface HeaderProps {
 }
 
 export default function Header({ title, backHref, action }: HeaderProps) {
-  const router = useRouter();
-
   return (
     <header style={{
       position: 'sticky',
       top: 0,
       zIndex: 50,
-      backgroundColor: 'white',
-      borderBottom: '1px solid #e5e7eb',
+      backgroundColor: 'var(--surface)',
+      borderBottom: '1px solid var(--border)',
       padding: '12px 16px',
       display: 'flex',
       alignItems: 'center',
@@ -27,28 +26,31 @@ export default function Header({ title, backHref, action }: HeaderProps) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         {backHref && (
-          <Link href={backHref} style={{ textDecoration: 'none', color: '#555', fontSize: 20, lineHeight: 1 }}>
+          <Link href={backHref} style={{ textDecoration: 'none', color: 'var(--text3)', fontSize: 20, lineHeight: 1 }}>
             ←
           </Link>
         )}
-        <span style={{ fontWeight: 700, fontSize: 17, color: '#1a1a1a' }}>{title}</span>
+        <span style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>{title}</span>
       </div>
 
-      {action && (
-        <Link href={action.href} style={{ textDecoration: 'none' }}>
-          <button style={{
-            padding: '6px 12px',
-            backgroundColor: 'transparent',
-            border: '1px solid #e5e7eb',
-            borderRadius: 8,
-            cursor: 'pointer',
-            fontSize: 18,
-            color: '#555',
-          }}>
-            {action.label}
-          </button>
-        </Link>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {action && (
+          <Link href={action.href} style={{ textDecoration: 'none' }}>
+            <button style={{
+              padding: '6px 12px',
+              backgroundColor: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              cursor: 'pointer',
+              fontSize: 18,
+              color: 'var(--text3)',
+            }}>
+              {action.label}
+            </button>
+          </Link>
+        )}
+        <ThemeToggle />
+      </div>
     </header>
   );
 }

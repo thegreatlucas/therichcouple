@@ -187,6 +187,7 @@ export default function TransactionsPage() {
                   <div style={{ fontSize: 18, fontWeight: 'bold', color: '#e74c3c' }}>R$ {display.toFixed(2)}</div>
                   {tx.split === 'shared' && <div style={{ fontSize: 12, color: '#9b59b6' }}>Sua parte: R$ {(display / 2).toFixed(2)}</div>}
                 </div>
+                <button onClick={() => router.push(`/transactions/${tx.id}`)} style={{ padding: '6px 10px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }} title="Comentários">💬</button>
                 <button onClick={() => openEdit(tx)} style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>✏️</button>
                 <button onClick={() => deleteTransaction(tx)} style={{ padding: '6px 10px', backgroundColor: '#ff4444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>🗑️</button>
               </div>
