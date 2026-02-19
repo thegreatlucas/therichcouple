@@ -4,313 +4,379 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import Header from '@/app/components/Header';
 
-const ACCOUNT_TYPES = [
-  { value: 'checking', label: '🏦 Conta Corrente' },
-  { value: 'savings', label: '💰 Poupança' },
-  { value: 'credit', label: '💳 Cartão de Crédito' },
-  { value: 'cash', label: '💵 Dinheiro' },
-  { value: 'meal_voucher', label: '🍽️ Vale Refeição' },
-  { value: 'food_voucher', label: '🛒 Vale Alimentação' },
-  { value: 'investment', label: '📈 Investimento' },
-  { value: 'other', label: '❓ Outro' },
-];
+type View = 'loading' | 'existing' | 'choose' | 'create' | 'join';
 
-const VOUCHER_TYPES = ['meal_voucher', 'food_voucher'];
-
-export default function AccountsPage() {
-  const [accounts, setAccounts] = useState<any[]>([]);
-  const [balances, setBalances] = useState<Record<string, number>>({});
-  const [householdId, setHouseholdId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [formData, setFormData] = useState({ name: '', type: 'checking' });
+export default function SetupPage() {
+  const [view, setView] = useState<View>('loading');
+  const [householdName, setHouseholdName] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [existingHousehold, setExistingHousehold] = useState<any>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { router.push('/login'); return; }
-
-      const { data: member } = await supabase
-        .from('household_members')
-        .select('household_id')
-        .eq('user_id', user.id)
-        .single();
-
-      if (!member) { router.push('/setup'); return; }
-      setHouseholdId(member.household_id);
-      await loadAccounts(member.household_id);
-      setLoading(false);
-    }
-    init();
+    checkExistingHousehold();
   }, []);
 
-  async function loadAccounts(hid: string) {
-    const { data } = await supabase
-      .from('accounts')
-      .select('*')
-      .eq('household_id', hid)
-      .order('name');
+  async function checkExistingHousehold() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { router.push('/login'); return; }
 
-    setAccounts(data || []);
+    const { data: member } = await supabase
+      .from('household_members')
+      .select('household_id, role, households(id, name, invite_code)')
+      .eq('user_id', user.id)
+      .single();
 
-    // Calcula saldo de cada conta:
-    // Receitas vinculadas - Gastos vinculados
-    if (data && data.length > 0) {
-      const balanceMap: Record<string, number> = {};
-
-      for (const acc of data) {
-        // Receitas que creditam nessa conta
-        const { data: incomeData } = await supabase
-          .from('incomes')
-          .select('amount')
-          .eq('account_id', acc.id);
-
-        const incomeTotal = (incomeData || []).reduce((s, i) => s + Number(i.amount), 0);
-
-        // Gastos debitados dessa conta
-        const { data: txData } = await supabase
-          .from('transactions')
-          .select('amount')
-          .eq('account_id', acc.id);
-
-        const txTotal = (txData || []).reduce((s, t) => s + Number(t.amount), 0);
-
-        balanceMap[acc.id] = incomeTotal - txTotal;
-      }
-
-      setBalances(balanceMap);
+    if (member?.households) {
+      setExistingHousehold(member.households);
+      setView('existing');
+    } else {
+      setView('choose');
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleCreateHousehold(e: React.FormEvent) {
     e.preventDefault();
+    setErrorMsg(null);
+    if (!householdName.trim()) { setErrorMsg('Digite um nome para o casal.'); return; }
+
+    setLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setErrorMsg('Faça login primeiro.'); setLoading(false); return; }
+
+    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+
+    const { data: household, error: householdError } = await supabase
+      .from('households')
+      .insert({ name: householdName.trim(), invite_code: code })
+      .select()
+      .single();
+
+    if (householdError) { setErrorMsg('Erro ao criar casal: ' + householdError.message); setLoading(false); return; }
+
+    const { error: memberError } = await supabase
+      .from('household_members')
+      .insert({ household_id: household.id, user_id: user.id, role: 'admin' });
+
+    if (memberError) { setErrorMsg('Casal criado, mas erro ao vincular: ' + memberError.message); setLoading(false); return; }
+
+    setLoading(false);
+    setInviteCode(code);
+    setExistingHousehold(household);
+    setView('existing');
+    setSuccessMsg('Casal criado com sucesso! Compartilhe o código abaixo com seu parceiro(a).');
+  }
+
+  async function handleJoinHousehold(e: React.FormEvent) {
+    e.preventDefault();
+    setErrorMsg(null);
+    const code = joinCode.trim().toUpperCase();
+    if (!code) { setErrorMsg('Digite o código de convite.'); return; }
+
+    setLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setErrorMsg('Faça login primeiro.'); setLoading(false); return; }
+
+    // Busca household pelo invite_code
+    const { data: household, error } = await supabase
+      .from('households')
+      .select('*')
+      .eq('invite_code', code)
+      .single();
+
+    if (error || !household) {
+      setErrorMsg('Código inválido ou não encontrado. Verifique e tente novamente.');
+      setLoading(false);
+      return;
+    }
+
+    // Verifica se já é membro
+    const { data: existing } = await supabase
+      .from('household_members')
+      .select('*')
+      .eq('household_id', household.id)
+      .eq('user_id', user.id)
+      .single();
+
+    if (existing) {
+      setErrorMsg('Você já faz parte deste casal.');
+      setLoading(false);
+      return;
+    }
+
+    // Verifica quantos membros já tem (máximo 2)
+    const { data: members } = await supabase
+      .from('household_members')
+      .select('user_id')
+      .eq('household_id', household.id);
+
+    if ((members || []).length >= 2) {
+      setErrorMsg('Este casal já tem dois membros.');
+      setLoading(false);
+      return;
+    }
+
+    // Entra no household
+    const { error: joinError } = await supabase
+      .from('household_members')
+      .insert({ household_id: household.id, user_id: user.id, role: 'member' });
+
+    if (joinError) { setErrorMsg('Erro ao entrar no casal: ' + joinError.message); setLoading(false); return; }
+
+    setLoading(false);
+    setExistingHousehold(household);
+    setView('existing');
+    setSuccessMsg(`Você entrou no casal "${household.name}" com sucesso! 🎉`);
+  }
+
+  async function handleLeaveHousehold() {
+    if (!confirm('Tem certeza que quer sair deste casal? Seus dados não serão apagados.')) return;
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const { data: member } = await supabase
+    await supabase
       .from('household_members')
-      .select('household_id')
-      .eq('user_id', user.id)
-      .single();
+      .delete()
+      .eq('household_id', existingHousehold.id)
+      .eq('user_id', user.id);
 
-    if (!member) return;
-
-    const payload = {
-      name: formData.name,
-      type: formData.type,
-      household_id: member.household_id,
-      owner_id: user.id,
-    };
-
-    if (editingId) {
-      const { error } = await supabase.from('accounts').update(payload).eq('id', editingId);
-      if (error) { alert('Erro ao atualizar: ' + error.message); return; }
-    } else {
-      const { error } = await supabase.from('accounts').insert(payload);
-      if (error) { alert('Erro ao criar: ' + error.message); return; }
-    }
-
-    resetForm();
-    await loadAccounts(member.household_id);
+    setExistingHousehold(null);
+    setView('choose');
+    setSuccessMsg(null);
   }
 
-  async function handleDelete(id: string, name: string) {
-    if (!confirm(`Deletar a conta "${name}"?`)) return;
-    const { error } = await supabase.from('accounts').delete().eq('id', id);
-    if (error) { alert('Erro: ' + error.message); return; }
-    if (householdId) loadAccounts(householdId);
+  async function handleSaveName() {
+    if (!userName.trim()) return;
+    const { error } = await supabase.auth.updateUser({ data: { name: userName.trim() } });
+    if (error) { alert('Erro ao salvar nome: ' + error.message); return; }
+    setSuccessMsg('Nome atualizado com sucesso!');
   }
 
-  function startEdit(account: any) {
-    setEditingId(account.id);
-    setFormData({ name: account.name, type: account.type || 'checking' });
-    setShowForm(true);
+  function copyCode(code: string) {
+    navigator.clipboard.writeText(code);
+    alert('Código copiado!');
   }
 
-  function resetForm() {
-    setEditingId(null);
-    setFormData({ name: '', type: 'checking' });
-    setShowForm(false);
-  }
+  // ---------- RENDER ----------
 
-  function getTypeLabel(type: string) {
-    return ACCOUNT_TYPES.find(t => t.value === type)?.label || type;
-  }
-
-  function getBalanceColor(balance: number, type: string) {
-    if (balance < 0) return '#e74c3c';
-    if (VOUCHER_TYPES.includes(type)) return '#f39c12';
-    return '#2ecc71';
-  }
-
-  // Totais por categoria
-  const cashAccounts = accounts.filter(a => !VOUCHER_TYPES.includes(a.type));
-  const voucherAccounts = accounts.filter(a => VOUCHER_TYPES.includes(a.type));
-  const totalCash = cashAccounts.reduce((s, a) => s + (balances[a.id] || 0), 0);
-  const totalVoucher = voucherAccounts.reduce((s, a) => s + (balances[a.id] || 0), 0);
-
-  if (loading) return <main style={{ padding: 16 }}>Carregando...</main>;
+  if (view === 'loading') return <main style={{ padding: 16 }}>Carregando...</main>;
 
   return (
-    <>
-      <Header title="Contas" backHref="/dashboard" />
-      <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <h1>🏦 Contas</h1>
-        <button
-          onClick={() => { resetForm(); setShowForm(!showForm); }}
-          style={{ padding: '8px 16px', fontSize: 16, backgroundColor: showForm ? '#e74c3c' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}
-        >
-          {showForm ? '✖️ Cancelar' : '➕ Nova conta'}
-        </button>
-      </div>
+    <main style={{ padding: 16, maxWidth: 480, margin: '0 auto' }}>
 
-      {/* Resumo de saldos */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
-        <div style={{ background: 'linear-gradient(135deg, #2ecc71, #27ae60)', padding: 16, borderRadius: 12, color: 'white' }}>
-          <div style={{ fontSize: 12, opacity: 0.9 }}>Saldo total (dinheiro)</div>
-          <div style={{ fontSize: 22, fontWeight: 'bold' }}>R$ {totalCash.toFixed(2)}</div>
-        </div>
-        {totalVoucher > 0 && (
-          <div style={{ background: 'linear-gradient(135deg, #f39c12, #e67e22)', padding: 16, borderRadius: 12, color: 'white' }}>
-            <div style={{ fontSize: 12, opacity: 0.9 }}>Saldo VR/VA</div>
-            <div style={{ fontSize: 22, fontWeight: 'bold' }}>R$ {totalVoucher.toFixed(2)}</div>
-            <div style={{ fontSize: 11, opacity: 0.8 }}>Uso restrito alimentação</div>
-          </div>
-        )}
-      </div>
+      {/* Já tem household */}
+      {view === 'existing' && existingHousehold && (
+        <>
+          <h1>🏠 Seu casal</h1>
 
-      {/* Formulário */}
-      {showForm && (
-        <form onSubmit={handleSubmit} style={{ backgroundColor: '#f5f5f5', padding: 20, borderRadius: 8, marginBottom: 24 }}>
-          <h3 style={{ marginTop: 0 }}>{editingId ? 'Editar Conta' : 'Nova Conta'}</h3>
-
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Nome:</label>
-            <input
-              type="text" value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              placeholder="Ex: Nubank, VR Ticket, Bradesco..."
-              style={{ width: '100%', padding: 8, fontSize: 16, borderRadius: 4, border: '1px solid #ccc' }}
-              required
-            />
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>Tipo:</label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8 }}>
-              {ACCOUNT_TYPES.map((t) => (
-                <button key={t.value} type="button"
-                  onClick={() => setFormData({ ...formData, type: t.value })}
-                  style={{
-                    padding: 10,
-                    border: formData.type === t.value ? '2px solid #3498db' : '1px solid #ddd',
-                    borderRadius: 8,
-                    backgroundColor: formData.type === t.value
-                      ? VOUCHER_TYPES.includes(t.value) ? '#fff3cd' : '#e3f2fd'
-                      : 'white',
-                    cursor: 'pointer',
-                    fontWeight: formData.type === t.value ? 'bold' : 'normal',
-                    fontSize: 13,
-                  }}
-                >
-                  {t.label}
-                </button>
-              ))}
+          {successMsg && (
+            <div style={{ backgroundColor: '#d4edda', border: '1px solid #c3e6cb', borderRadius: 8, padding: 14, marginTop: 16, color: '#155724', fontSize: 14 }}>
+              ✅ {successMsg}
             </div>
-            {VOUCHER_TYPES.includes(formData.type) && (
-              <div style={{ marginTop: 8, backgroundColor: '#fff3cd', padding: 10, borderRadius: 6, fontSize: 13 }}>
-                🍽️ Contas de vale têm saldo separado e só podem ser usadas para gastos de alimentação.
+          )}
+
+          <div style={{ border: '1px solid #ddd', borderRadius: 12, padding: 20, marginTop: 20, marginBottom: 16 }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>👤 Seu perfil</h3>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <input
+                type="text"
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+                placeholder="Seu nome"
+                style={{ flex: 1, padding: 10, fontSize: 15, borderRadius: 8, border: '1px solid #ddd' }}
+              />
+              <button
+                onClick={handleSaveName}
+                style={{ padding: '10px 16px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', whiteSpace: 'nowrap' }}
+              >
+                💾 Salvar
+              </button>
+            </div>
+          </div>
+
+          <div style={{ border: '1px solid #ddd', borderRadius: 12, padding: 24, marginTop: 0 }}>
+            <h2 style={{ margin: '0 0 4px' }}>{existingHousehold.name}</h2>
+            <p style={{ color: '#666', fontSize: 14, marginBottom: 20 }}>Você já está pareado(a).</p>
+
+            <div>
+              <p style={{ fontWeight: 'bold', marginBottom: 8, fontSize: 14 }}>🔑 Código de convite para o(a) parceiro(a):</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  fontSize: 28,
+                  fontWeight: 'bold',
+                  letterSpacing: 6,
+                  backgroundColor: '#f0f4ff',
+                  border: '2px dashed #3498db',
+                  borderRadius: 10,
+                  padding: '12px 20px',
+                  fontFamily: 'monospace',
+                  flex: 1,
+                  textAlign: 'center',
+                }}>
+                  {existingHousehold.invite_code}
+                </div>
+                <button
+                  onClick={() => copyCode(existingHousehold.invite_code)}
+                  style={{ padding: '12px 16px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}
+                >
+                  📋 Copiar
+                </button>
+              </div>
+              <p style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
+                Compartilhe este código com seu parceiro(a) para que ele(a) entre no casal.
+              </p>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 20, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Link href="/dashboard">
+              <button style={{ padding: '12px 24px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold' }}>
+                ▶️ Ir para o Dashboard
+              </button>
+            </Link>
+            <button
+              onClick={handleLeaveHousehold}
+              style={{ padding: '12px 20px', backgroundColor: 'transparent', color: '#e74c3c', border: '1px solid #e74c3c', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}
+            >
+              Sair deste casal
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Escolha: criar ou entrar */}
+      {view === 'choose' && (
+        <>
+          <h1>👫 Configurar casal</h1>
+          <p style={{ color: '#666', marginTop: 8, marginBottom: 28 }}>
+            Você ainda não está em nenhum casal. Crie um novo ou entre com o código de convite do seu parceiro(a).
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <button
+              onClick={() => { setView('create'); setErrorMsg(null); }}
+              style={{
+                padding: 24, border: '2px solid #3498db', borderRadius: 12,
+                backgroundColor: '#f0f8ff', cursor: 'pointer', textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: 36, marginBottom: 8 }}>🏠</div>
+              <div style={{ fontWeight: 'bold', marginBottom: 4 }}>Criar casal</div>
+              <div style={{ fontSize: 12, color: '#666' }}>Sou o primeiro a entrar</div>
+            </button>
+
+            <button
+              onClick={() => { setView('join'); setErrorMsg(null); }}
+              style={{
+                padding: 24, border: '2px solid #2ecc71', borderRadius: 12,
+                backgroundColor: '#f0fff4', cursor: 'pointer', textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: 36, marginBottom: 8 }}>🔑</div>
+              <div style={{ fontWeight: 'bold', marginBottom: 4 }}>Entrar com código</div>
+              <div style={{ fontSize: 12, color: '#666' }}>Tenho um código de convite</div>
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Criar */}
+      {view === 'create' && (
+        <>
+          <button onClick={() => setView('choose')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3498db', marginBottom: 16, padding: 0, fontSize: 14 }}>
+            ← Voltar
+          </button>
+          <h1>🏠 Criar casal</h1>
+          <p style={{ color: '#666', marginTop: 8, marginBottom: 24 }}>
+            Depois de criar, você receberá um código para compartilhar com seu parceiro(a).
+          </p>
+
+          <form onSubmit={handleCreateHousehold}>
+            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8 }}>
+              Nome do casal:
+            </label>
+            <input
+              type="text"
+              value={householdName}
+              onChange={(e) => setHouseholdName(e.target.value)}
+              placeholder="Lucas & Ana"
+              style={{ width: '100%', padding: 12, fontSize: 16, borderRadius: 8, border: '1px solid #ddd', marginBottom: 8 }}
+            />
+            <p style={{ fontSize: 12, color: '#999', marginBottom: 20 }}>
+              Pode ser qualquer nome que identifique vocês dois.
+            </p>
+
+            {errorMsg && (
+              <div style={{ color: '#e74c3c', backgroundColor: '#fde8e8', border: '1px solid #f5c6cb', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 14 }}>
+                ❌ {errorMsg}
               </div>
             )}
-          </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" style={{ padding: '10px 20px', fontSize: 16, backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-              {editingId ? '💾 Salvar' : '➕ Criar'}
+            <button
+              type="submit"
+              disabled={loading}
+              style={{ width: '100%', padding: '14px', backgroundColor: loading ? '#95a5a6' : '#3498db', color: 'white', border: 'none', borderRadius: 8, cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: 16 }}
+            >
+              {loading ? 'Criando...' : '✅ Criar casal'}
             </button>
-            <button type="button" onClick={resetForm} style={{ padding: '10px 20px', fontSize: 16, backgroundColor: '#95a5a6', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
-              Cancelar
+          </form>
+        </>
+      )}
+
+      {/* Entrar com código */}
+      {view === 'join' && (
+        <>
+          <button onClick={() => setView('choose')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3498db', marginBottom: 16, padding: 0, fontSize: 14 }}>
+            ← Voltar
+          </button>
+          <h1>🔑 Entrar com código</h1>
+          <p style={{ color: '#666', marginTop: 8, marginBottom: 24 }}>
+            Digite o código de convite que seu parceiro(a) te enviou.
+          </p>
+
+          <form onSubmit={handleJoinHousehold}>
+            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8 }}>
+              Código de convite:
+            </label>
+            <input
+              type="text"
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+              placeholder="EX: ABC123"
+              maxLength={8}
+              style={{
+                width: '100%', padding: 16, fontSize: 28,
+                textAlign: 'center', letterSpacing: 6, fontFamily: 'monospace',
+                borderRadius: 8, border: '2px dashed #2ecc71', marginBottom: 8,
+                textTransform: 'uppercase',
+              }}
+            />
+            <p style={{ fontSize: 12, color: '#999', marginBottom: 20 }}>
+              O código tem 6 caracteres e não diferencia maiúsculas/minúsculas.
+            </p>
+
+            {errorMsg && (
+              <div style={{ color: '#e74c3c', backgroundColor: '#fde8e8', border: '1px solid #f5c6cb', borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 14 }}>
+                ❌ {errorMsg}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              style={{ width: '100%', padding: '14px', backgroundColor: loading ? '#95a5a6' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: 16 }}
+            >
+              {loading ? 'Verificando...' : '🚀 Entrar no casal'}
             </button>
-          </div>
-        </form>
+          </form>
+        </>
       )}
-
-      {/* Contas de dinheiro */}
-      {cashAccounts.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: 16, color: '#666', marginBottom: 12 }}>💵 Contas bancárias</h2>
-          {cashAccounts.map((acc) => {
-            const balance = balances[acc.id] ?? 0;
-            return (
-              <div key={acc.id} style={{ border: '1px solid #ddd', padding: 16, marginBottom: 10, borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'white' }}>
-                <div>
-                  <div style={{ fontWeight: 'bold', fontSize: 17 }}>{acc.name}</div>
-                  <div style={{ fontSize: 13, color: '#666' }}>{getTypeLabel(acc.type)}</div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 'bold', fontSize: 18, color: getBalanceColor(balance, acc.type) }}>
-                      R$ {balance.toFixed(2)}
-                    </div>
-                    <div style={{ fontSize: 11, color: '#999' }}>saldo calculado</div>
-                  </div>
-                  <button onClick={() => startEdit(acc)}
-                    style={{ padding: '8px 12px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>✏️</button>
-                  <button onClick={() => handleDelete(acc.id, acc.name)}
-                    style={{ padding: '8px 12px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>🗑️</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Contas de vale */}
-      {voucherAccounts.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: 16, color: '#666', marginBottom: 12 }}>🍽️ Vale Refeição / Alimentação</h2>
-          {voucherAccounts.map((acc) => {
-            const balance = balances[acc.id] ?? 0;
-            return (
-              <div key={acc.id} style={{ border: '1px solid #f39c12', padding: 16, marginBottom: 10, borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#fffbf0' }}>
-                <div>
-                  <div style={{ fontWeight: 'bold', fontSize: 17 }}>{acc.name}</div>
-                  <div style={{ fontSize: 13, color: '#e67e22' }}>{getTypeLabel(acc.type)} · Uso restrito alimentação</div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 'bold', fontSize: 18, color: balance < 0 ? '#e74c3c' : '#f39c12' }}>
-                      R$ {balance.toFixed(2)}
-                    </div>
-                    <div style={{ fontSize: 11, color: '#999' }}>saldo calculado</div>
-                  </div>
-                  <button onClick={() => startEdit(acc)}
-                    style={{ padding: '8px 12px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>✏️</button>
-                  <button onClick={() => handleDelete(acc.id, acc.name)}
-                    style={{ padding: '8px 12px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>🗑️</button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {accounts.length === 0 && (
-        <p style={{ textAlign: 'center', color: '#666', padding: 32 }}>Nenhuma conta cadastrada ainda.</p>
-      )}
-
-      <div style={{ marginTop: 24 }}>
-        <Link href="/dashboard">
-          <button style={{ padding: '12px 24px', fontSize: 16 }}>⬅️ Voltar ao Dashboard</button>
-        </Link>
-      </div>
     </main>
-  </>
   );
 }
