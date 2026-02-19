@@ -146,16 +146,22 @@ export default function Dashboard() {
 
     const { data: txs } = await supabase
       .from('transactions')
-      .select('amount, split, payer_id, categories(name, icon, color)')
+      .select('amount, installment_value, installments_count, split, payer_id, categories(name, icon, color)')
       .eq('household_id', hid)
       .eq('user_id', uid)
       .gte('date', firstDay)
       .lte('date', lastDay);
 
     const all = txs || [];
-    const total = all.reduce((s, t) => s + Number(t.amount), 0);
-    const shared = all.filter(t => t.split === 'shared').reduce((s, t) => s + Number(t.amount), 0);
-    const individual = all.filter(t => t.split === 'individual').reduce((s, t) => s + Number(t.amount), 0);
+    // Parcelados: usar installment_value (parcela mensal), não amount (total da compra)
+    const eff = (t: any) =>
+      t.installments_count > 1 && t.installment_value
+        ? Number(t.installment_value)
+        : Number(t.amount);
+
+    const total = all.reduce((s, t) => s + eff(t), 0);
+    const shared = all.filter(t => t.split === 'shared').reduce((s, t) => s + eff(t), 0);
+    const individual = all.filter(t => t.split === 'individual').reduce((s, t) => s + eff(t), 0);
 
     setTotalExpenses(total);
     setSharedExpenses(shared);
@@ -169,7 +175,7 @@ export default function Dashboard() {
         name: key,
         icon: t.categories?.icon || '📁',
         color: t.categories?.color || '#95a5a6',
-        amount: (existing?.amount || 0) + Number(t.amount),
+        amount: (existing?.amount || 0) + eff(t),
       });
     });
 
@@ -383,40 +389,30 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Cards financeiros principais */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
-          <div style={{ border: '1px solid #d4edda', borderRadius: 12, padding: 16, backgroundColor: '#f0fff4' }}>
-            <div style={{ fontSize: 11, color: '#666', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Renda</div>
-            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#27ae60' }}>
-              R$ {totalIncome.toFixed(2)}
-            </div>
-            {totalIncome === 0 && (
-              <Link href="/incomes" style={{ fontSize: 11, color: '#27ae60' }}>+ Cadastrar renda</Link>
-            )}
-          </div>
-
-          <div style={{ border: '1px solid #fde8e8', borderRadius: 12, padding: 16, backgroundColor: '#fff8f8' }}>
-            <div style={{ fontSize: 11, color: '#666', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Gastos</div>
-            <div style={{ fontSize: 20, fontWeight: 'bold', color: '#e74c3c' }}>
-              R$ {totalExpenses.toFixed(2)}
-            </div>
-            <div style={{ fontSize: 11, color: '#999', marginTop: 3 }}>
-              👫 R$ {sharedExpenses.toFixed(2)} compartilhado
+        {/* Cards financeiros — layout compacto, uma linha por item */}
+        <div style={{ border: '1px solid #eee', borderRadius: 12, marginBottom: 16, overflow: 'hidden' }}>
+          {/* Renda */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', backgroundColor: '#f0fff4', borderBottom: '1px solid #d4edda' }}>
+            <span style={{ fontSize: 13, color: '#555' }}>💵 Renda</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontWeight: 'bold', color: '#27ae60', fontSize: 15 }}>R$ {totalIncome.toFixed(2)}</span>
+              {totalIncome === 0 && <Link href="/incomes" style={{ fontSize: 11, color: '#27ae60' }}>+ Cadastrar</Link>}
             </div>
           </div>
-
-          <div style={{
-            border: `1px solid ${balance_display === null ? '#ddd' : balance_display >= 0 ? '#d4edda' : '#fde8e8'}`,
-            borderRadius: 12, padding: 16,
-            backgroundColor: balance_display === null ? '#fafafa' : balance_display >= 0 ? '#f0fff4' : '#fff8f8'
-          }}>
-            <div style={{ fontSize: 11, color: '#666', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Saldo</div>
-            <div style={{ fontSize: 20, fontWeight: 'bold', color: balance_display === null ? '#999' : balance_display >= 0 ? '#27ae60' : '#e74c3c' }}>
-              {balance_display === null ? '—' : `R$ ${balance_display.toFixed(2)}`}
+          {/* Gastos */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', backgroundColor: '#fff8f8', borderBottom: '1px solid #fde8e8' }}>
+            <span style={{ fontSize: 13, color: '#555' }}>💳 Gastos</span>
+            <div style={{ textAlign: 'right' }}>
+              <span style={{ fontWeight: 'bold', color: '#e74c3c', fontSize: 15 }}>R$ {totalExpenses.toFixed(2)}</span>
+              {sharedExpenses > 0 && <div style={{ fontSize: 11, color: '#999' }}>👫 R$ {sharedExpenses.toFixed(2)} compartilhado</div>}
             </div>
-            {balance_display === null && (
-              <div style={{ fontSize: 11, color: '#999', marginTop: 3 }}>Cadastre sua renda</div>
-            )}
+          </div>
+          {/* Saldo */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', backgroundColor: balance_display === null ? '#fafafa' : balance_display >= 0 ? '#f0fff4' : '#fff8f8' }}>
+            <span style={{ fontSize: 13, color: '#555' }}>📊 Saldo</span>
+            <span style={{ fontWeight: 'bold', fontSize: 15, color: balance_display === null ? '#999' : balance_display >= 0 ? '#27ae60' : '#e74c3c' }}>
+              {balance_display === null ? '— Cadastre sua renda' : `R$ ${balance_display.toFixed(2)}`}
+            </span>
           </div>
         </div>
 
