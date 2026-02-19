@@ -177,6 +177,7 @@ export default function IncomesPage() {
       recurrence: 'monthly',
       month: new Date().toISOString().slice(0, 7),
       account_id: '',
+      installments: '1',
     });
     setShowForm(false);
   }
