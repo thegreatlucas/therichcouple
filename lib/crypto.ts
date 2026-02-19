@@ -73,7 +73,7 @@ export async function encryptHouseholdKey(
   const enc = await encryptField(rawHK, pinKey);
   return {
     encryptedKey: enc,
-    salt: btoa(String.fromCharCode(...salt)),
+    salt: btoa(String.fromCharCode(...Array.from(salt))),
   };
 }
 
