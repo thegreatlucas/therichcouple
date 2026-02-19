@@ -129,7 +129,6 @@ export default function NewTransaction() {
     const finalAmount = paymentMethod === 'credit' && creditPaymentType === 'parcelado' && hasInterest && installmentValue
       ? parseFloat(installmentValue) * parseInt(installments)
       : parseFloat(amount);
-    const interestTotal = finalAmount - parseFloat(amount);
     if (!description.trim()) { alert('⚠️ Digite uma descrição'); return; }
     if (paymentMethod !== 'credit' && !accountId) { alert('⚠️ Selecione uma conta'); return; }
     if (paymentMethod === 'credit' && !creditCardId) { alert('⚠️ Selecione um cartão'); return; }
@@ -587,7 +586,7 @@ export default function NewTransaction() {
               )}
             </div>
           )}
-        )}
+        </div>
         )}
 
         {/* Botões */}
