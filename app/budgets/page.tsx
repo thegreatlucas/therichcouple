@@ -78,6 +78,7 @@ export default function BudgetsPage() {
     const { data: cats } = await supabase
       .from('categories')
       .select('*')
+      .eq('household_id', members.household_id)
       .order('name');
     setCategories(cats || []);
 

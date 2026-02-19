@@ -50,10 +50,13 @@ export default function CategoriesPage() {
     loadCategories();
   }
 
-  async function loadCategories() {
+  async function loadCategories(hid?: string) {
+    const id = hid || householdId;
+    if (!id) return;
     const { data, error } = await supabase
       .from('categories')
       .select('*')
+      .eq('household_id', id)
       .order('name');
 
     if (error) {
