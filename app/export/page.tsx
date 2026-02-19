@@ -93,7 +93,7 @@ export default function ExportPage() {
       const cat = `${t.categories?.icon || ''} ${t.categories?.name || 'Sem categoria'}`;
       catMap.set(cat, (catMap.get(cat) || 0) + getDisplayValue(t));
     });
-    const cats = [...catMap.entries()].sort((a, b) => b[1] - a[1]);
+    const cats = Array.from(catMap.entries()).sort((a, b) => b[1] - a[1]);
 
     const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
 <title>The Rich Couple — ${periodo}</title>
