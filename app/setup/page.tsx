@@ -33,6 +33,7 @@ export default function SetupPage() {
     if (!vaultPin || vaultPin.length < 4) {
       setErrorMsg('Digite um PIN de 4+ dígitos para proteger seus dados.');
       setLoading(false); return;
+    }
     
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
