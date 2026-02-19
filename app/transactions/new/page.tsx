@@ -7,7 +7,6 @@ import Link from 'next/link';
 
 export default function NewTransaction() {
   const [user, setUser] = useState<any>(null);
-  const [households, setHouseholds] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [creditCards, setCreditCards] = useState<any[]>([]);
@@ -43,9 +42,7 @@ export default function NewTransaction() {
         .select('households(id, name)')
         .eq('user_id', user.id);
 
-      setHouseholds(memberData || []);
       const householdId = (memberData?.[0]?.households as any)?.id;
-
       if (householdId) {
         setSelectedHousehold(householdId);
         await loadHouseholdData(householdId);
@@ -53,11 +50,6 @@ export default function NewTransaction() {
     }
     loadData();
   }, [router]);
-
-  useEffect(() => {
-    if (!selectedHousehold) return;
-    loadHouseholdData(selectedHousehold);
-  }, [selectedHousehold]);
 
   useEffect(() => {
     if (paymentMethod !== 'credit' || !creditCardId || !date) return;
@@ -72,7 +64,6 @@ export default function NewTransaction() {
       supabase.from('accounts').select('*').eq('household_id', householdId).order('name'),
       supabase.from('credit_cards').select('*').eq('household_id', householdId).order('name'),
     ]);
-
     setCategories(catRes.data || []);
     setAccounts(accRes.data || []);
     setCreditCards(cardRes.data || []);
@@ -91,10 +82,8 @@ export default function NewTransaction() {
     }
   }
 
-  function formatCurrency(value: string) {
-    const num = parseFloat(value);
-    if (isNaN(num)) return 'R$ 0,00';
-    return `R$ ${num.toFixed(2).replace('.', ',')}`;
+  function formatCurrency(value: number) {
+    return `R$ ${value.toFixed(2).replace('.', ',')}`;
   }
 
   function getInvoiceMonthLabel(isoMonth: string) {
@@ -102,33 +91,33 @@ export default function NewTransaction() {
     return new Date(isoMonth + 'T12:00:00').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
   }
 
+  // Valores derivados calculados em tempo real
+  const originalAmount = parseFloat(amount || '0');
+  const numInstallments = parseInt(installments || '1');
+  const instValue = parseFloat(installmentValue || '0');
+  const isParcelado = paymentMethod === 'credit' && creditPaymentType === 'parcelado';
+  const totalWithInterest = hasInterest && instValue > 0 ? instValue * numInstallments : 0;
+  const interestAmount = totalWithInterest > 0 ? totalWithInterest - originalAmount : 0;
+  const interestPercent = originalAmount > 0 && interestAmount > 0
+    ? ((interestAmount / originalAmount) * 100).toFixed(1) : '0';
+  const finalAmount = isParcelado && hasInterest && totalWithInterest > 0
+    ? totalWithInterest : originalAmount;
+
   function clearForm() {
-    setAmount('');
-    setDescription('');
-    setCategoryId('');
+    setAmount(''); setDescription(''); setCategoryId('');
     setDate(new Date().toISOString().split('T')[0]);
-    setSplitType('individual');
-    setPaymentMethod('cash');
-    setIsRecurring(false);
-    setIsSubscription(false);
-    setRecurringFrequency('monthly');
-    setRecurringDayOfMonth('');
-    setCreditCardId(creditCards[0]?.id || '');
-    setInvoiceMonth('');
-    setCreditPaymentType('avista');
-    setInstallments('2');
-    setHasInterest(false);
-    setInstallmentValue('');
+    setSplitType('individual'); setPaymentMethod('cash');
+    setIsRecurring(false); setIsSubscription(false);
+    setRecurringFrequency('monthly'); setRecurringDayOfMonth('');
+    setCreditCardId(creditCards[0]?.id || ''); setInvoiceMonth('');
+    setCreditPaymentType('avista'); setInstallments('2');
+    setHasInterest(false); setInstallmentValue('');
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-
     if (!selectedHousehold) { alert('⚠️ Selecione um casal'); return; }
     if (!amount || parseFloat(amount) <= 0) { alert('⚠️ Digite um valor válido'); return; }
-    const finalAmount = paymentMethod === 'credit' && creditPaymentType === 'parcelado' && hasInterest && installmentValue
-      ? parseFloat(installmentValue) * parseInt(installments)
-      : parseFloat(amount);
     if (!description.trim()) { alert('⚠️ Digite uma descrição'); return; }
     if (paymentMethod !== 'credit' && !accountId) { alert('⚠️ Selecione uma conta'); return; }
     if (paymentMethod === 'credit' && !creditCardId) { alert('⚠️ Selecione um cartão'); return; }
@@ -136,31 +125,39 @@ export default function NewTransaction() {
     setLoading(true);
 
     const { data: members } = await supabase
-      .from('household_members')
-      .select('user_id')
+      .from('household_members').select('user_id')
       .eq('household_id', selectedHousehold);
-
     const otherUserId = members?.find((m: any) => m.user_id !== user.id)?.user_id;
 
-    // Insere a transação
+    // Monta payload com campos de juros
+    const txPayload: any = {
+      household_id: selectedHousehold,
+      account_id: paymentMethod !== 'credit' ? accountId : null,
+      user_id: user.id,
+      payer_id: user.id,
+      category_id: categoryId || null,
+      amount: finalAmount,
+      original_amount: originalAmount,
+      description: description.trim(),
+      date,
+      payment_method: paymentMethod,
+      split: splitType,
+      is_recurring: isRecurring || isSubscription,
+      is_subscription: isSubscription,
+    };
+
+    if (isParcelado) {
+      txPayload.installments_count = numInstallments;
+      txPayload.installment_value = hasInterest && instValue > 0
+        ? instValue
+        : originalAmount / numInstallments;
+      if (hasInterest && totalWithInterest > 0) {
+        txPayload.total_with_interest = totalWithInterest;
+      }
+    }
+
     const { data: newTx, error: transError } = await supabase
-      .from('transactions')
-      .insert({
-        household_id: selectedHousehold,
-        account_id: paymentMethod !== 'credit' ? accountId : null,
-        user_id: user.id,
-        payer_id: user.id,
-        category_id: categoryId || null,
-        amount: finalAmount,
-        description: description.trim(),
-        date: date,
-        payment_method: paymentMethod,
-        split: splitType,
-        is_recurring: isRecurring || isSubscription,
-        is_subscription: isSubscription,
-      })
-      .select()
-      .single();
+      .from('transactions').insert(txPayload).select().single();
 
     if (transError) {
       alert('❌ Erro ao salvar: ' + transError.message);
@@ -168,18 +165,16 @@ export default function NewTransaction() {
       return;
     }
 
-    // Se crédito → cria/atualiza fatura
+    // Fatura de cartão
     if (paymentMethod === 'credit' && creditCardId && invoiceMonth) {
       const { data: existingInvoice } = await supabase
-        .from('invoices')
-        .select('*')
+        .from('invoices').select('*')
         .eq('credit_card_id', creditCardId)
         .eq('month', invoiceMonth)
         .maybeSingle();
 
       if (existingInvoice) {
-        await supabase
-          .from('invoices')
+        await supabase.from('invoices')
           .update({ total: Number(existingInvoice.total) + finalAmount })
           .eq('id', existingInvoice.id);
       } else {
@@ -187,78 +182,43 @@ export default function NewTransaction() {
           credit_card_id: creditCardId,
           month: invoiceMonth,
           total: finalAmount,
-          installments: paymentMethod === 'credit' && creditPaymentType === 'parcelado' ? parseInt(installments) : 1,
           status: 'open',
         });
       }
     }
 
-    // Se compartilhado → atualiza balance acumulando (não sobrescrevendo)
-    // Lógica: quem pagou tem crédito de metade do valor sobre o outro
-    // O saldo é sempre guardado na direção: from_user deve para to_user
+    // Balance compartilhado
     if (splitType === 'shared' && otherUserId) {
-      const splitAmount = parseFloat(amount) / 2;
-      // user.id pagou → otherUserId deve splitAmount para user.id
-
-      // Busca saldo existente nas duas direções
-      const { data: balA } = await supabase
-        .from('balances')
-        .select('*')
+      const splitAmount = finalAmount / 2;
+      const { data: balA } = await supabase.from('balances').select('*')
         .eq('household_id', selectedHousehold)
-        .eq('from_user_id', otherUserId)
-        .eq('to_user_id', user.id)
-        .maybeSingle();
-
-      const { data: balB } = await supabase
-        .from('balances')
-        .select('*')
+        .eq('from_user_id', otherUserId).eq('to_user_id', user.id).maybeSingle();
+      const { data: balB } = await supabase.from('balances').select('*')
         .eq('household_id', selectedHousehold)
-        .eq('from_user_id', user.id)
-        .eq('to_user_id', otherUserId)
-        .maybeSingle();
+        .eq('from_user_id', user.id).eq('to_user_id', otherUserId).maybeSingle();
 
       if (balA) {
-        // Já existe saldo no sentido correto (outro deve para mim) → soma
-        await supabase
-          .from('balances')
-          .update({ amount: Number(balA.amount) + splitAmount })
-          .eq('id', balA.id);
+        await supabase.from('balances').update({ amount: Number(balA.amount) + splitAmount }).eq('id', balA.id);
       } else if (balB) {
-        // Existe saldo no sentido inverso (eu devia para o outro) → abate
         const newAmount = Number(balB.amount) - splitAmount;
         if (newAmount > 0.001) {
-          // Ainda sobra dívida na mesma direção
           await supabase.from('balances').update({ amount: newAmount }).eq('id', balB.id);
         } else if (newAmount < -0.001) {
-          // A dívida inverteu de direção
           await supabase.from('balances').delete().eq('id', balB.id);
-          await supabase.from('balances').insert({
-            household_id: selectedHousehold,
-            from_user_id: otherUserId,
-            to_user_id: user.id,
-            amount: Math.abs(newAmount),
-          });
+          await supabase.from('balances').insert({ household_id: selectedHousehold, from_user_id: otherUserId, to_user_id: user.id, amount: Math.abs(newAmount) });
         } else {
-          // Zerou exatamente
           await supabase.from('balances').delete().eq('id', balB.id);
         }
       } else {
-        // Nenhum saldo ainda → cria
-        await supabase.from('balances').insert({
-          household_id: selectedHousehold,
-          from_user_id: otherUserId,
-          to_user_id: user.id,
-          amount: splitAmount,
-        });
+        await supabase.from('balances').insert({ household_id: selectedHousehold, from_user_id: otherUserId, to_user_id: user.id, amount: splitAmount });
       }
     }
 
-    // Se recorrente → cria regra
+    // Recorrência
     if ((isRecurring || isSubscription) && newTx) {
       const selectedDate = new Date(date + 'T12:00:00');
       const dayOfMonth = recurringDayOfMonth ? parseInt(recurringDayOfMonth) : selectedDate.getDate();
       const nextDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, dayOfMonth);
-
       await supabase.from('recurrence_rules').insert({
         household_id: selectedHousehold,
         base_transaction_id: newTx.id,
@@ -283,10 +243,11 @@ export default function NewTransaction() {
       </div>
 
       <form onSubmit={handleSubmit}>
-
-        {/* Valor */}
+        {/* Valor original */}
         <div style={{ marginBottom: 20 }}>
-          <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>💰 Valor:</label>
+          <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>
+            💰 Valor original da compra:
+          </label>
           <input
             type="number" value={amount}
             onChange={(e) => setAmount(e.target.value)}
@@ -296,7 +257,7 @@ export default function NewTransaction() {
           />
           {amount && (
             <div style={{ marginTop: 8, fontSize: 18, color: '#e74c3c', fontWeight: 'bold' }}>
-              {formatCurrency(amount)}
+              {formatCurrency(originalAmount)}
             </div>
           )}
         </div>
@@ -319,8 +280,7 @@ export default function NewTransaction() {
           <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>🏷️ Categoria:</label>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: 8 }}>
             {categories.map((cat) => (
-              <button
-                key={cat.id} type="button"
+              <button key={cat.id} type="button"
                 onClick={() => setCategoryId(categoryId === cat.id ? '' : cat.id)}
                 style={{
                   padding: 10,
@@ -366,10 +326,9 @@ export default function NewTransaction() {
               { value: 'credit', label: '💳 Crédito' },
               { value: 'pix', label: '🔷 PIX' },
               { value: 'transfer', label: '🏦 Transferência' },
-              { value: 'other', label: '❓ Outro' },
+              { value: 'meal_voucher', label: '🍽️ Vale Ref.' },
             ].map((method) => (
-              <button
-                key={method.value} type="button"
+              <button key={method.value} type="button"
                 onClick={() => setPaymentMethod(method.value)}
                 style={{
                   padding: 10,
@@ -398,8 +357,7 @@ export default function NewTransaction() {
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 8, marginBottom: 12 }}>
                   {creditCards.map((card) => (
-                    <button
-                      key={card.id} type="button"
+                    <button key={card.id} type="button"
                       onClick={() => setCreditCardId(card.id)}
                       style={{
                         padding: 12,
@@ -423,77 +381,101 @@ export default function NewTransaction() {
                 )}
 
                 {/* À vista ou parcelado */}
-                <div style={{ marginTop: 8 }}>
-                  <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8, fontSize: 14 }}>Forma de compra:</label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
-                    {([['avista', '💳 À vista'], ['parcelado', '📊 Parcelado']] as const).map(([val, label]) => (
-                      <button key={val} type="button"
-                        onClick={() => setCreditPaymentType(val)}
-                        style={{ padding: 10, border: creditPaymentType === val ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: creditPaymentType === val ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: creditPaymentType === val ? 'bold' : 'normal', fontSize: 13 }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
+                <label style={{ display: 'block', fontWeight: 'bold', marginBottom: 8, fontSize: 14 }}>Forma de compra:</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+                  {([['avista', '💳 À vista'], ['parcelado', '📊 Parcelado']] as const).map(([val, label]) => (
+                    <button key={val} type="button"
+                      onClick={() => { setCreditPaymentType(val); setHasInterest(false); setInstallmentValue(''); }}
+                      style={{ padding: 10, border: creditPaymentType === val ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: creditPaymentType === val ? '#e8f4ff' : 'white', cursor: 'pointer', fontWeight: creditPaymentType === val ? 'bold' : 'normal', fontSize: 13 }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
 
-                  {creditPaymentType === 'parcelado' && (
-                    <div style={{ backgroundColor: '#f8f9ff', borderRadius: 8, padding: 12, border: '1px solid #dde' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
-                        <div>
-                          <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Parcelas:</label>
-                          <select value={installments} onChange={e => setInstallments(e.target.value)}
-                            style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 6, border: '1px solid #ccc' }}
-                          >
-                            {[2,3,4,5,6,7,8,9,10,11,12,18,24].map(n => (
-                              <option key={n} value={n}>{n}x</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Juros:</label>
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            {([false, true] as const).map(v => (
-                              <button key={String(v)} type="button"
-                                onClick={() => { setHasInterest(v); if (!v) setInstallmentValue(''); }}
-                                style={{ flex: 1, padding: 8, border: hasInterest === v ? '2px solid #e74c3c' : '1px solid #ddd', borderRadius: 6, backgroundColor: hasInterest === v ? (v ? '#fde8e8' : '#e8f8f0') : 'white', cursor: 'pointer', fontSize: 12, fontWeight: hasInterest === v ? 'bold' : 'normal' }}
-                              >
-                                {v ? '📈 Com juros' : '✅ Sem juros'}
-                              </button>
-                            ))}
-                          </div>
+                {creditPaymentType === 'parcelado' && (
+                  <div style={{ backgroundColor: '#f8f9ff', borderRadius: 8, padding: 12, border: '1px solid #dde' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+                      <div>
+                        <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Parcelas:</label>
+                        <select value={installments}
+                          onChange={e => { setInstallments(e.target.value); setInstallmentValue(''); }}
+                          style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 6, border: '1px solid #ccc' }}
+                        >
+                          {[2,3,4,5,6,7,8,9,10,11,12,18,24].map(n => (
+                            <option key={n} value={n}>{n}x</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Juros:</label>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          {([false, true] as const).map(v => (
+                            <button key={String(v)} type="button"
+                              onClick={() => { setHasInterest(v); if (!v) setInstallmentValue(''); }}
+                              style={{ flex: 1, padding: 8, border: hasInterest === v ? '2px solid #e74c3c' : '1px solid #ddd', borderRadius: 6, backgroundColor: hasInterest === v ? (v ? '#fde8e8' : '#e8f8f0') : 'white', cursor: 'pointer', fontSize: 12, fontWeight: hasInterest === v ? 'bold' : 'normal' }}
+                            >
+                              {v ? '📈 Com juros' : '✅ Sem juros'}
+                            </button>
+                          ))}
                         </div>
                       </div>
-
-                      {!hasInterest && amount && (
-                        <div style={{ backgroundColor: '#e8f8f0', padding: 10, borderRadius: 6, fontSize: 13, textAlign: 'center' }}>
-                          ✅ {installments}x de <strong>R$ {(parseFloat(amount || '0') / parseInt(installments)).toFixed(2)}</strong> sem juros
-                        </div>
-                      )}
-
-                      {hasInterest && (
-                        <div>
-                          <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>Valor de cada parcela (R$):</label>
-                          <input type="number" value={installmentValue} onChange={e => setInstallmentValue(e.target.value)}
-                            placeholder="Ex: 85.90" step="0.01" min="0"
-                            style={{ width: '100%', padding: 8, fontSize: 15, borderRadius: 6, border: '1px solid #e74c3c' }}
-                          />
-                          {installmentValue && amount && (
-                            <div style={{ backgroundColor: '#fde8e8', padding: 10, borderRadius: 6, fontSize: 13, marginTop: 8 }}>
-                              📈 Total com juros: <strong>R$ {(parseFloat(installmentValue) * parseInt(installments)).toFixed(2)}</strong>
-                              {' · '}💸 Juros: <strong style={{ color: '#e74c3c' }}>R$ {((parseFloat(installmentValue) * parseInt(installments)) - parseFloat(amount || '0')).toFixed(2)}</strong>
-                            </div>
-                          )}
-                        </div>
-                      )}
                     </div>
-                  )}
-                </div>
+
+                    {/* Sem juros */}
+                    {!hasInterest && amount && (
+                      <div style={{ backgroundColor: '#e8f8f0', padding: 10, borderRadius: 6, fontSize: 13, textAlign: 'center' }}>
+                        ✅ {installments}x de <strong>{formatCurrency(originalAmount / numInstallments)}</strong> sem juros
+                      </div>
+                    )}
+
+                    {/* Com juros */}
+                    {hasInterest && (
+                      <div>
+                        <label style={{ fontSize: 13, fontWeight: 'bold', display: 'block', marginBottom: 4 }}>
+                          💰 Valor de cada parcela com juros (R$):
+                        </label>
+                        <input
+                          type="number" value={installmentValue}
+                          onChange={e => setInstallmentValue(e.target.value)}
+                          placeholder="Ex: 85.90" step="0.01" min="0"
+                          style={{ width: '100%', padding: 8, fontSize: 15, borderRadius: 6, border: '2px solid #e74c3c', marginBottom: 8 }}
+                        />
+
+                        {installmentValue && amount && (
+                          <div style={{ backgroundColor: '#fde8e8', padding: 12, borderRadius: 8, border: '1px solid #e74c3c' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, textAlign: 'center', marginBottom: 10 }}>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>Valor original</div>
+                                <div style={{ fontWeight: 'bold', fontSize: 15 }}>{formatCurrency(originalAmount)}</div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>Total com juros</div>
+                                <div style={{ fontWeight: 'bold', fontSize: 15, color: '#e74c3c' }}>{formatCurrency(totalWithInterest)}</div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 11, color: '#888', marginBottom: 2 }}>Juros pagos</div>
+                                <div style={{ fontWeight: 'bold', fontSize: 15, color: '#c0392b' }}>
+                                  {formatCurrency(interestAmount)}
+                                  <span style={{ fontSize: 11, display: 'block', fontWeight: 'normal' }}>+{interestPercent}%</span>
+                                </div>
+                              </div>
+                            </div>
+                            <div style={{ textAlign: 'center', fontSize: 12, color: '#888' }}>
+                              {numInstallments}x de {formatCurrency(instValue)} · será salvo como {formatCurrency(totalWithInterest)}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </div>
         )}
 
-        {/* Conta — só aparece se não for crédito */}
+        {/* Conta */}
         {paymentMethod !== 'credit' && (
           <div style={{ marginBottom: 20 }}>
             <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>🏦 Conta:</label>
@@ -502,9 +484,7 @@ export default function NewTransaction() {
                 Nenhuma conta. <Link href="/accounts" style={{ color: '#3498db' }}>Criar conta</Link>
               </p>
             ) : (
-              <select
-                value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
+              <select value={accountId} onChange={(e) => setAccountId(e.target.value)}
                 style={{ width: '100%', padding: 12, fontSize: 16, borderRadius: 8, border: '1px solid #ddd', backgroundColor: 'white' }}
                 required
               >
@@ -534,65 +514,58 @@ export default function NewTransaction() {
           </div>
           {splitType === 'shared' && amount && (
             <div style={{ marginTop: 12, padding: 12, backgroundColor: '#fff3cd', borderRadius: 8, fontSize: 14, textAlign: 'center' }}>
-              💡 Cada um paga: <strong>{formatCurrency((parseFloat(amount) / 2).toString())}</strong>
+              💡 Cada um paga: <strong>{formatCurrency(finalAmount / 2)}</strong>
             </div>
           )}
         </div>
 
-        {/* Recorrência — oculta para crédito parcelado */}
-        {!(paymentMethod === 'credit' && creditPaymentType === 'parcelado') && (
-        <div style={{ marginBottom: 24, backgroundColor: '#f8f9fa', padding: 16, borderRadius: 8, border: '1px solid #ddd' }}>
-          <label style={{ display: 'block', marginBottom: 12, fontWeight: 'bold' }}>🔁 Recorrência:</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
-            <button type="button"
-              onClick={() => { setIsRecurring(!isRecurring); if (isSubscription) setIsSubscription(false); }}
-              style={{ padding: 12, border: isRecurring ? '2px solid #9b59b6' : '1px solid #ddd', borderRadius: 8, backgroundColor: isRecurring ? '#f3e5f5' : 'white', cursor: 'pointer', fontWeight: isRecurring ? 'bold' : 'normal', fontSize: 13 }}
-            >
-              🔁 Recorrente<br /><span style={{ fontSize: 11, color: '#666' }}>Aluguel, conta fixa...</span>
-            </button>
-            <button type="button"
-              onClick={() => { setIsSubscription(!isSubscription); if (isRecurring) setIsRecurring(false); }}
-              style={{ padding: 12, border: isSubscription ? '2px solid #9b59b6' : '1px solid #ddd', borderRadius: 8, backgroundColor: isSubscription ? '#f3e5f5' : 'white', cursor: 'pointer', fontWeight: isSubscription ? 'bold' : 'normal', fontSize: 13 }}
-            >
-              📺 Assinatura<br /><span style={{ fontSize: 11, color: '#666' }}>Netflix, Spotify...</span>
-            </button>
-          </div>
-
-          {(isRecurring || isSubscription) && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Frequência:</label>
-                <select
-                  value={recurringFrequency}
-                  onChange={(e) => setRecurringFrequency(e.target.value)}
-                  style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 4, border: '1px solid #ccc' }}
-                >
-                  <option value="monthly">Mensal</option>
-                  <option value="weekly">Semanal</option>
-                </select>
-              </div>
-              {recurringFrequency === 'monthly' && (
+        {/* Recorrência */}
+        {!isParcelado && (
+          <div style={{ marginBottom: 24, backgroundColor: '#f8f9fa', padding: 16, borderRadius: 8, border: '1px solid #ddd' }}>
+            <label style={{ display: 'block', marginBottom: 12, fontWeight: 'bold' }}>🔁 Recorrência:</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+              <button type="button"
+                onClick={() => { setIsRecurring(!isRecurring); if (isSubscription) setIsSubscription(false); }}
+                style={{ padding: 12, border: isRecurring ? '2px solid #9b59b6' : '1px solid #ddd', borderRadius: 8, backgroundColor: isRecurring ? '#f3e5f5' : 'white', cursor: 'pointer', fontWeight: isRecurring ? 'bold' : 'normal', fontSize: 13 }}
+              >
+                🔁 Recorrente<br /><span style={{ fontSize: 11, color: '#666' }}>Aluguel, conta fixa...</span>
+              </button>
+              <button type="button"
+                onClick={() => { setIsSubscription(!isSubscription); if (isRecurring) setIsRecurring(false); }}
+                style={{ padding: 12, border: isSubscription ? '2px solid #9b59b6' : '1px solid #ddd', borderRadius: 8, backgroundColor: isSubscription ? '#f3e5f5' : 'white', cursor: 'pointer', fontWeight: isSubscription ? 'bold' : 'normal', fontSize: 13 }}
+              >
+                📺 Assinatura<br /><span style={{ fontSize: 11, color: '#666' }}>Netflix, Spotify...</span>
+              </button>
+            </div>
+            {(isRecurring || isSubscription) && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div>
-                  <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Todo dia:</label>
-                  <input
-                    type="number"
-                    value={recurringDayOfMonth}
-                    onChange={(e) => setRecurringDayOfMonth(e.target.value)}
-                    placeholder={`${new Date(date + 'T12:00:00').getDate()} (da data)`}
-                    min="1" max="31"
-                    style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 4, border: '1px solid #ccc' }}
-                  />
+                  <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Frequência:</label>
+                  <select value={recurringFrequency} onChange={(e) => setRecurringFrequency(e.target.value)}
+                    style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 4, border: '1px solid #ccc' }}>
+                    <option value="monthly">Mensal</option>
+                    <option value="weekly">Semanal</option>
+                  </select>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
+                {recurringFrequency === 'monthly' && (
+                  <div>
+                    <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 'bold' }}>Todo dia:</label>
+                    <input type="number" value={recurringDayOfMonth}
+                      onChange={(e) => setRecurringDayOfMonth(e.target.value)}
+                      placeholder={`${new Date(date + 'T12:00:00').getDate()} (da data)`}
+                      min="1" max="31"
+                      style={{ width: '100%', padding: 8, fontSize: 14, borderRadius: 4, border: '1px solid #ccc' }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Botões */}
         <div style={{ display: 'flex', gap: 12 }}>
-          <button
-            type="submit" disabled={loading}
+          <button type="submit" disabled={loading}
             style={{ flex: 1, padding: '16px 24px', fontSize: 18, fontWeight: 'bold', backgroundColor: loading ? '#95a5a6' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: loading ? 'not-allowed' : 'pointer' }}
           >
             {loading ? '⏳ Salvando...' : '✅ Salvar Gasto'}
