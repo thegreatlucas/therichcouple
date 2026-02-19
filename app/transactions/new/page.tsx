@@ -63,7 +63,7 @@ export default function NewTransaction() {
 
   async function loadHouseholdData(householdId: string) {
     const [catRes, accRes, cardRes] = await Promise.all([
-      supabase.from('categories').select('*').eq('household_id', householdId).order('name'),
+      supabase.from('categories').select('*').eq('household_id', householdId).order('name').order('parent_id', { nullsFirst: true }),
       supabase.from('accounts').select('*').eq('household_id', householdId).order('name'),
       supabase.from('credit_cards').select('*').eq('household_id', householdId).order('name'),
     ]);
@@ -259,26 +259,45 @@ export default function NewTransaction() {
         {/* Categoria */}
         <div style={{ marginBottom: 20 }}>
           <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>🏷️ Categoria:</label>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: 8 }}>
-            {categories.map((cat) => (
-              <button key={cat.id} type="button"
-                onClick={() => setCategoryId(categoryId === cat.id ? '' : cat.id)}
-                style={{
-                  padding: 10,
-                  border: categoryId === cat.id ? '3px solid #3498db' : '1px solid #ddd',
-                  borderRadius: 8,
-                  backgroundColor: categoryId === cat.id ? cat.color || '#3498db' : 'white',
-                  color: categoryId === cat.id ? 'white' : '#333',
-                  cursor: 'pointer', fontSize: 13,
-                  fontWeight: categoryId === cat.id ? 'bold' : 'normal',
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-                }}
-              >
-                <span style={{ fontSize: 22 }}>{cat.icon || '📁'}</span>
-                <span>{cat.name}</span>
-              </button>
-            ))}
-          </div>
+          {(() => {
+            const roots = categories.filter((c: any) => !c.parent_id);
+            const subs = categories.filter((c: any) => c.parent_id);
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {roots.map((cat: any) => {
+                  const children = subs.filter((s: any) => s.parent_id === cat.id);
+                  const isSelected = categoryId === cat.id;
+                  return (
+                    <div key={cat.id}>
+                      {/* Categoria principal */}
+                      <button type="button" onClick={() => setCategoryId(isSelected ? '' : cat.id)}
+                        style={{ width: '100%', padding: '10px 14px', border: isSelected ? `3px solid ${cat.color || '#3498db'}` : '1px solid #ddd', borderRadius: 10, backgroundColor: isSelected ? (cat.color || '#3498db') : 'white', color: isSelected ? 'white' : '#333', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, fontWeight: isSelected ? 700 : 400, fontSize: 14, textAlign: 'left' }}>
+                        <span style={{ fontSize: 22 }}>{cat.icon || '📁'}</span>
+                        <span style={{ flex: 1 }}>{cat.name}</span>
+                        {children.length > 0 && <span style={{ fontSize: 11, opacity: 0.7 }}>{children.length} sub</span>}
+                      </button>
+                      {/* Subcategorias */}
+                      {children.length > 0 && (
+                        <div style={{ marginLeft: 20, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {children.map((sub: any) => {
+                            const isSubSel = categoryId === sub.id;
+                            return (
+                              <button key={sub.id} type="button" onClick={() => setCategoryId(isSubSel ? '' : sub.id)}
+                                style={{ padding: '7px 12px', border: isSubSel ? `2px solid ${sub.color || cat.color || '#3498db'}` : '1px solid #eee', borderRadius: 8, borderLeft: `3px solid ${cat.color || '#3498db'}`, backgroundColor: isSubSel ? (sub.color || cat.color || '#3498db') : '#fafafa', color: isSubSel ? 'white' : '#444', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, textAlign: 'left', fontWeight: isSubSel ? 600 : 400 }}>
+                                <span style={{ fontSize: 11, color: isSubSel ? 'rgba(255,255,255,0.7)' : '#aaa' }}>↳</span>
+                                <span style={{ fontSize: 18 }}>{sub.icon || cat.icon || '📁'}</span>
+                                <span>{sub.name}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
           {categories.length === 0 && (
             <p style={{ color: '#666', fontSize: 14, marginTop: 8 }}>
               Nenhuma categoria. <Link href="/categories" style={{ color: '#3498db' }}>Criar</Link>

@@ -411,6 +411,30 @@ export default function SetupPage() {
           </div>
         </div>
 
+        {/* Compartilhamento de chave cripto */}
+        <div style={sectionStyle}>
+          <div style={sectionTitle}>🔐 Chave do cofre</div>
+          <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
+            Para que seu parceiro(a) veja os dados criptografados neste dispositivo, é preciso compartilhar a chave AES do cofre de forma segura.
+          </p>
+          <Link href="/setup-crypto" style={{ textDecoration: 'none', display: 'block' }}>
+            <button
+              style={{
+                width: '100%', padding: '12px 16px',
+                backgroundColor: '#9b59b6', color: 'white',
+                border: 'none', borderRadius: 10, cursor: 'pointer',
+                fontSize: 14, fontWeight: 600, display: 'flex',
+                alignItems: 'center', justifyContent: 'center', gap: 8,
+              }}
+            >
+              🔐 Compartilhar / Receber chave via QR
+            </button>
+          </Link>
+          <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
+            Gera um QR code de 1 uso que expira em 10 minutos. Nunca trafega a chave em texto puro.
+          </div>
+        </div>
+
         {/* Zona de perigo */}
         <div style={{ border: '1px solid #fde8e8', borderRadius: 14, padding: '16px 22px', backgroundColor: '#fff8f8' }}>
           <div style={{ ...sectionTitle, color: '#c0392b' }}>⚠️ Zona de perigo</div>
