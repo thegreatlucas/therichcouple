@@ -42,7 +42,7 @@ export default function Dashboard() {
   const router = useRouter();
   const { householdKey } = useCrypto();
   const { unlockWithPin } = usePinUnlock();
-  const { activeGroupId, activeGroup, groups, loading: groupLoading } = useFinanceGroup();
+  const { activeGroupId, activeGroup, loading: groupLoading } = useFinanceGroup();
 
   const now = new Date();
   const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
@@ -52,23 +52,33 @@ export default function Dashboard() {
   const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   useEffect(() => {
-    // Aguarda o contexto terminar de carregar completamente
-    if (groupLoading) return;
+    // ✅ CORRIGIDO: não depende do contexto para decidir o redirect.
+    // Consulta o Supabase diretamente para evitar race condition com o Provider.
+    async function checkAndInit() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { router.push('/login'); return; }
 
-    // ✅ CORRIGIDO: proteção dupla — só redireciona se:
-    // 1. O carregamento terminou (groupLoading=false)
-    // 2. Não há nenhum grupo na lista (grupos foram buscados e não existem)
-    // Isso evita o redirect prematuro quando activeGroupId ainda não foi setado
-    if (!activeGroupId && groups.length === 0) {
-      router.push('/setup');
-      return;
+      // Busca direto no banco — fonte da verdade, sem depender do contexto
+      const { data: member } = await supabase
+        .from('household_members')
+        .select('household_id')
+        .eq('user_id', user.id)
+        .limit(1)
+        .maybeSingle();
+
+      if (!member?.household_id) {
+        router.push('/setup');
+        return;
+      }
+
+      // Se o contexto já carregou com o groupId correto, usa ele
+      // Senão, usa o household_id direto do banco
+      const groupId = activeGroupId || member.household_id;
+      init(groupId);
     }
 
-    // Se há grupos mas activeGroupId ainda não foi setado, aguarda o próximo render
-    if (!activeGroupId) return;
-
-    init(activeGroupId);
-  }, [groupLoading, activeGroupId, groups.length]);
+    checkAndInit();
+  }, []); // ✅ Roda uma vez ao montar — sem dependência de contexto instável
 
   async function init(groupId: string) {
     const { data: { user } } = await supabase.auth.getUser();
