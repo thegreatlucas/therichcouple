@@ -35,7 +35,7 @@ export default function SetupPage() {
 
   const router = useRouter();
   const { setHouseholdKey } = useCrypto();
-  const { groups, activeGroup, activeGroupId } = useFinanceGroup();
+  const { groups, activeGroup, activeGroupId, reload } = useFinanceGroup();
 
   useEffect(() => {
     init();
@@ -152,9 +152,9 @@ export default function SetupPage() {
     setShipName('');
     setCloseMode('manual');
     setCloseDay('');
-    setView('settings');
-    setSuccessMsg('Espaço financeiro criado com sucesso! 🎉 Compartilhe o código abaixo com quem for participar.');
     setLoading(false);
+    reload(); // ✅ CORRIGIDO: recarrega o FinanceGroupContext com o novo household
+    router.push('/dashboard'); // ✅ CORRIGIDO: navega após o contexto ser atualizado
   }
 
   // ── Join household ──────────────────────────────────────────
@@ -186,9 +186,9 @@ export default function SetupPage() {
     setHousehold(hh);
     setHouseholdId(hh.id);
     setHouseholdName(hh.name);
-    setView('settings');
-    setSuccessMsg(`Você entrou em "${hh.name}" com sucesso! 🎉`);
     setLoading(false);
+    reload(); // ✅ CORRIGIDO: recarrega o FinanceGroupContext com o household recém-entrado
+    router.push('/dashboard'); // ✅ CORRIGIDO: navega após o contexto ser atualizado
   }
 
   // ── Leave household ──────────────────────────────────────────
