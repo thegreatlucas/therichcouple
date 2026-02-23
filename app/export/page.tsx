@@ -1,240 +1,343 @@
 'use client';
-// app/export/page.tsx — Exportar relatório mensal (PDF via print ou CSV)
+// app/categories/page.tsx — Com suporte a subcategorias
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Header from '@/app/components/Header';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
-export default function ExportPage() {
-  const router = useRouter();
+interface Category {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  parent_id: string | null;
+  created_at: string;
+  subcategories?: Category[];
+}
+
+export default function CategoriesPage() {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [householdId, setHouseholdId] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [formData, setFormData] = useState({
+    name: '',
+    icon: '📁',
+    color: '#3498db',
+    parent_id: '',
+  });
+  const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
-  const now = new Date();
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [year, setYear] = useState(now.getFullYear());
-  const [format, setFormat] = useState<'pdf' | 'csv'>('pdf');
+  const iconOptions = ['🍔','🚗','🏠','💡','🎮','👕','💊','✈️','🎬','📚','🏋️','🐶','💰','🎁','📱','🛒','☕','🍕','🎵','⚽','🧴','🏥','🎓','💻','🌿'];
+  const colorOptions = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#34495e','#e91e63','#00bcd4'];
 
-  useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { router.push('/login'); return; }
-      const { data: member } = await supabase.from('household_members').select('household_id').eq('user_id', user.id).single();
-      if (member) setHouseholdId(member.household_id);
-    }
-    init();
-  }, []);
+  useEffect(() => { checkAuth(); }, []);
 
-  async function fetchData() {
-    if (!householdId) return null;
-    const start = `${year}-${String(month).padStart(2, '0')}-01`;
-    const lastDay = new Date(year, month, 0).getDate();
-    const end = `${year}-${String(month).padStart(2, '0')}-${lastDay}`;
-    const [txsRes, incomesRes] = await Promise.all([
-      supabase.from('transactions').select('*, categories(name, icon)').eq('household_id', householdId).gte('date', start).lte('date', end).order('date', { ascending: true }),
-      supabase.from('incomes').select('*').eq('household_id', householdId).order('name'),
-    ]);
-    return { transactions: txsRes.data || [], incomes: incomesRes.data || [], start, end };
+  async function checkAuth() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { router.push('/login'); return; }
+    const { data: memberData, error } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+    const memberData = members?.[0] ?? null;
+    if (!memberData) { router.push('/setup'); return; }
+    setHouseholdId(memberData.household_id);
+    loadCategories(memberData.household_id);
   }
 
-  function getDisplayValue(t: any) {
-    return t.installments_count > 1 && t.installment_value ? Number(t.installment_value) : Number(t.amount);
-  }
+  async function loadCategories(hid: string) {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('household_id', hid)
+      .order('name');
 
-  function downloadCSV(data: any) {
-    const { transactions, incomes, start } = data;
-    const totalIncome = incomes.reduce((s: number, i: any) => s + Number(i.amount), 0);
-    const totalExpense = transactions.reduce((s: number, t: any) => s + getDisplayValue(t), 0);
-    const periodo = new Date(start + 'T12:00:00').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+    if (error) { setLoading(false); return; }
 
-    const rows = [
-      ['The Rich Couple — Relatório', periodo],
-      [],
-      ['── RECEITAS ──'],
-      ['Nome', 'Valor (R$)', 'Frequência'],
-      ...incomes.map((i: any) => [i.name, Number(i.amount).toFixed(2), i.frequency || 'mensal']),
-      ['TOTAL RECEITAS', totalIncome.toFixed(2)],
-      [],
-      ['── DESPESAS ──'],
-      ['Data', 'Descrição', 'Categoria', 'Valor (R$)', 'Divisão', 'Pagamento'],
-      ...transactions.map((t: any) => [
-        new Date(t.date + 'T12:00:00').toLocaleDateString('pt-BR'),
-        t.description,
-        t.categories?.name || 'Sem categoria',
-        getDisplayValue(t).toFixed(2),
-        t.split === 'shared' ? 'Compartilhado' : 'Individual',
-        t.payment_method || '',
-      ]),
-      ['TOTAL DESPESAS', totalExpense.toFixed(2)],
-      [],
-      ['SALDO DO MÊS', (totalIncome - totalExpense).toFixed(2)],
-    ];
-
-    const csv = rows.map((r) => r.map((v: any) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `richcouple-${year}-${String(month).padStart(2, '0')}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function printPDF(data: any) {
-    const { transactions, incomes, start } = data;
-    const totalIncome = incomes.reduce((s: number, i: any) => s + Number(i.amount), 0);
-    const totalExpense = transactions.reduce((s: number, t: any) => s + getDisplayValue(t), 0);
-    const saldo = totalIncome - totalExpense;
-    const periodo = new Date(start + 'T12:00:00').toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
-
-    const catMap = new Map<string, number>();
-    transactions.forEach((t: any) => {
-      const cat = `${t.categories?.icon || ''} ${t.categories?.name || 'Sem categoria'}`;
-      catMap.set(cat, (catMap.get(cat) || 0) + getDisplayValue(t));
+    // Monta a árvore: separa pais e filhos
+    const all = (data || []) as Category[];
+    const roots = all.filter(c => !c.parent_id);
+    roots.forEach(r => {
+      r.subcategories = all.filter(c => c.parent_id === r.id);
     });
-    const cats = Array.from(catMap.entries()).sort((a, b) => b[1] - a[1]);
 
-    const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">
-<title>The Rich Couple — ${periodo}</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,sans-serif;color:#1a1a1a;font-size:12px;padding:32px}
-h1{font-size:22px;margin-bottom:4px}
-.sub{color:#666;margin-bottom:24px}
-.summary{display:flex;gap:12px;margin-bottom:28px}
-.card{flex:1;border:1px solid #ddd;border-radius:8px;padding:12px 14px}
-.card .lbl{font-size:10px;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
-.card .val{font-size:20px;font-weight:800}
-.green{color:#2ecc71}.red{color:#e74c3c}.blue{color:#3498db}.orange{color:#e67e22}
-h2{font-size:13px;font-weight:700;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #eee;text-transform:uppercase;letter-spacing:.5px}
-table{width:100%;border-collapse:collapse;margin-bottom:24px;font-size:11px}
-th{background:#f5f5f5;padding:7px 8px;text-align:left;font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.4px}
-td{padding:6px 8px;border-bottom:1px solid #f8f8f8}
-.tr{text-align:right}
-.tag{display:inline-block;padding:2px 6px;border-radius:10px;font-size:9px;font-weight:600}
-.shared{background:#ede7f6;color:#7b1fa2}.indv{background:#e8f5e9;color:#2e7d32}
-.bar-row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
-.bar-lbl{width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
-.bar-bg{flex:1;height:8px;background:#f0f0f0;border-radius:4px;overflow:hidden}
-.bar-fill{height:100%;background:#3498db;border-radius:4px}
-.bar-val{width:70px;text-align:right;font-size:11px;font-weight:700}
-footer{margin-top:32px;padding-top:12px;border-top:1px solid #eee;font-size:10px;color:#aaa;text-align:center}
-@media print{body{padding:12px}@page{margin:1cm}}
-</style></head><body>
-<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
-  <div><h1>💰 The Rich Couple</h1><div class="sub">Relatório mensal — ${periodo}</div></div>
-  <div style="font-size:10px;color:#aaa;text-align:right">Gerado em ${new Date().toLocaleDateString('pt-BR')}</div>
-</div>
-<div class="summary">
-  <div class="card"><div class="lbl">Receitas</div><div class="val green">R$ ${totalIncome.toFixed(2)}</div></div>
-  <div class="card"><div class="lbl">Despesas</div><div class="val red">R$ ${totalExpense.toFixed(2)}</div></div>
-  <div class="card"><div class="lbl">Saldo</div><div class="val ${saldo >= 0 ? 'green' : 'red'}">R$ ${saldo.toFixed(2)}</div></div>
-  <div class="card"><div class="lbl">Transações</div><div class="val blue">${transactions.length}</div></div>
-</div>
-${cats.length > 0 ? `<h2>📊 Gastos por categoria</h2><div style="margin-bottom:24px">
-${cats.slice(0, 8).map(([cat, val]) => `<div class="bar-row">
-  <div class="bar-lbl">${cat}</div>
-  <div class="bar-bg"><div class="bar-fill" style="width:${totalExpense > 0 ? Math.round(val / totalExpense * 100) : 0}%"></div></div>
-  <div class="bar-val">R$ ${val.toFixed(2)}</div>
-</div>`).join('')}
-</div>` : ''}
-${incomes.length > 0 ? `<h2>📈 Receitas</h2>
-<table><tr><th>Fonte</th><th class="tr">Valor</th><th>Frequência</th></tr>
-${incomes.map((i: any) => `<tr><td>${i.name}</td><td class="tr"><b>R$ ${Number(i.amount).toFixed(2)}</b></td><td>${i.frequency || 'mensal'}</td></tr>`).join('')}
-<tr style="background:#f9f9f9"><td><b>Total</b></td><td class="tr"><b>R$ ${totalIncome.toFixed(2)}</b></td><td></td></tr>
-</table>` : ''}
-<h2>💳 Despesas do período (${transactions.length})</h2>
-${transactions.length === 0 ? '<p style="color:#888;margin-bottom:24px;font-size:12px">Nenhuma despesa registrada neste período.</p>' : `
-<table><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th class="tr">Valor</th><th>Tipo</th></tr>
-${transactions.map((t: any) => {
-  const val = getDisplayValue(t);
-  return `<tr>
-    <td>${new Date(t.date + 'T12:00:00').toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</td>
-    <td>${t.description}${t.installments_count > 1 ? ` <span class="orange">(${t.installments_count}x)</span>` : ''}</td>
-    <td>${t.categories?.icon || ''} ${t.categories?.name || '—'}</td>
-    <td class="tr"><b>R$ ${val.toFixed(2)}</b></td>
-    <td><span class="tag ${t.split === 'shared' ? 'shared' : 'indv'}">${t.split === 'shared' ? '👫 Compartilhado' : '👤 Individual'}</span></td>
-  </tr>`;
-}).join('')}
-<tr style="background:#f5f5f5"><td colspan="3"><b>Total</b></td><td class="tr"><b>R$ ${totalExpense.toFixed(2)}</b></td><td></td></tr>
-</table>`}
-<footer>The Rich Couple · Gerado em ${new Date().toLocaleString('pt-BR')}</footer>
-</body></html>`;
-
-    const win = window.open('', '_blank');
-    if (!win) { alert('Habilite pop-ups para gerar o PDF'); return; }
-    win.document.write(html);
-    win.document.close();
-    setTimeout(() => win.print(), 600);
+    setCategories(roots);
+    setLoading(false);
   }
 
-  async function generate() {
-    setGenerating(true);
-    const data = await fetchData();
-    setGenerating(false);
-    if (!data) return;
-    if (format === 'csv') downloadCSV(data);
-    else printPDF(data);
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!formData.name.trim()) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { data: members } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+      const member = members?.[0] ?? null;
+    if (!member) return;
+    const hid = member.household_id;
+
+    const base: any = {
+      name: formData.name,
+      icon: formData.icon,
+      color: formData.color,
+      parent_id: formData.parent_id || null,
+    };
+
+    if (editingId) {
+      const payload = await encryptRecord(base);
+      const { error } = await supabase.from('categories').update(payload).eq('id', editingId);
+      if (error) { alert('Erro: ' + error.message); return; }
+    } else {
+      const payload = await encryptRecord({ ...base, household_id: hid });
+      const { error } = await supabase.from('categories').insert(payload);
+      if (error) { alert('Erro: ' + error.message); return; }
+    }
+
+    resetForm();
+    loadCategories(hid);
   }
 
-  const MONTHS = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-  const YEARS = [now.getFullYear() - 2, now.getFullYear() - 1, now.getFullYear()];
+  async function handleDelete(id: string, name: string, hasChildren: boolean) {
+    const msg = hasChildren
+      ? `Deletar "${name}" e todas as suas subcategorias?`
+      : `Deletar "${name}"?`;
+    if (!confirm(msg)) return;
+    await supabase.from('categories').delete().eq('id', id);
+    if (householdId) loadCategories(householdId);
+  }
+
+  function startEdit(cat: Category) {
+    setEditingId(cat.id);
+    setFormData({ name: cat.name, icon: cat.icon || '📁', color: cat.color || '#3498db', parent_id: cat.parent_id || '' });
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function resetForm() {
+    setEditingId(null);
+    setFormData({ name: '', icon: '📁', color: '#3498db', parent_id: '' });
+    setShowForm(false);
+  }
+
+  function toggleExpand(id: string) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  // Categorias raiz para o select de pai (excluindo a própria ao editar)
+  const parentOptions = categories.filter(c => c.id !== editingId);
+
+  if (loading) return <main style={{ padding: 16, color: 'var(--text)' }}>Carregando...</main>;
 
   return (
     <>
-      <Header title="Exportar Relatório" backHref="/dashboard" />
-      <main style={{ padding: 16, maxWidth: 480, margin: '0 auto' }}>
-        <div style={{ marginBottom: 24 }}>
-          <h2 style={{ color: 'var(--text)', marginBottom: 6 }}>📤 Exportar relatório</h2>
-          <p style={{ fontSize: 14, color: 'var(--text3)' }}>Gere um relatório completo com receitas, despesas e saldo do mês.</p>
-        </div>
+      <Header title="Categorias" backHref="/dashboard" />
+      <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
 
-        {/* Período */}
-        <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 20, marginBottom: 16 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.5px' }}>📅 Período</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>Mês</label>
-              <select value={month} onChange={e => setMonth(Number(e.target.value))} style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14 }}>
-                {MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>Ano</label>
-              <select value={year} onChange={e => setYear(Number(e.target.value))} style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14 }}>
-                {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
-            </div>
+        {/* Header da página */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div>
+            <h1 style={{ color: 'var(--text)', margin: 0 }}>Categorias</h1>
+            <p style={{ color: 'var(--text3)', fontSize: 13, margin: '4px 0 0' }}>
+              {categories.length} categorias · {categories.reduce((n, c) => n + (c.subcategories?.length || 0), 0)} subcategorias
+            </p>
           </div>
+          <button
+            onClick={() => { if (showForm) resetForm(); else setShowForm(true); }}
+            style={{ padding: '8px 16px', backgroundColor: showForm ? '#e74c3c' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+            {showForm ? '✖️ Cancelar' : '➕ Nova'}
+          </button>
         </div>
 
-        {/* Formato */}
-        <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 20, marginBottom: 24 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.5px' }}>📄 Formato</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {([
-              ['pdf', '🖨️', 'PDF', 'Abre para imprimir\nou salvar como PDF'],
-              ['csv', '📊', 'Excel / CSV', 'Planilha compatível com\nExcel e Google Sheets'],
-            ] as const).map(([f, icon, label, desc]) => (
-              <button key={f} onClick={() => setFormat(f)}
-                style={{ padding: '14px 12px', borderRadius: 10, border: format === f ? '2px solid var(--green)' : '1px solid var(--border)', backgroundColor: format === f ? '#f0fff5' : 'var(--surface2)', cursor: 'pointer', textAlign: 'center' }}>
-                <div style={{ fontSize: 24, marginBottom: 4 }}>{icon}</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginBottom: 3 }}>{label}</div>
-                <div style={{ fontSize: 11, color: 'var(--text3)', whiteSpace: 'pre-line' }}>{desc}</div>
+        {/* Formulário */}
+        {showForm && (
+          <form onSubmit={handleSubmit} style={{ backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', padding: 20, borderRadius: 12, marginBottom: 24 }}>
+            <h3 style={{ marginTop: 0, color: 'var(--text)', marginBottom: 16 }}>
+              {editingId ? '✏️ Editar categoria' : '➕ Nova categoria'}
+            </h3>
+
+            {/* Categoria pai */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>
+                Tipo
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: !formData.parent_id ? '2px solid #3498db' : '1px solid var(--border)', backgroundColor: !formData.parent_id ? '#e8f4ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: !formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  🏷️ Categoria principal
+                </button>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: parentOptions[0]?.id || '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: formData.parent_id ? '2px solid #9b59b6' : '1px solid var(--border)', backgroundColor: formData.parent_id ? '#f3e8ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  ↳ Subcategoria
+                </button>
+              </div>
+            </div>
+
+            {/* Select de pai — aparece apenas se for subcategoria */}
+            {formData.parent_id !== '' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Categoria pai</label>
+                <select value={formData.parent_id} onChange={e => setFormData(f => ({ ...f, parent_id: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14 }}>
+                  {parentOptions.length === 0
+                    ? <option value="">Crie uma categoria principal primeiro</option>
+                    : parentOptions.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)
+                  }
+                </select>
+              </div>
+            )}
+
+            {/* Nome */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Nome</label>
+              <input type="text" value={formData.name} onChange={e => setFormData(f => ({ ...f, name: e.target.value }))}
+                placeholder={formData.parent_id ? 'Ex: Supermercado, iFood...' : 'Ex: Alimentação, Transporte...'}
+                required style={{ width: '100%', padding: '9px 12px', fontSize: 15, borderRadius: 8, border: '1px solid var(--border)' }} />
+            </div>
+
+            {/* Ícone */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Ícone</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {iconOptions.map(icon => (
+                  <button key={icon} type="button" onClick={() => setFormData(f => ({ ...f, icon }))}
+                    style={{ fontSize: 22, padding: 7, border: formData.icon === icon ? '2px solid #3498db' : '1px solid var(--border)', borderRadius: 8, backgroundColor: formData.icon === icon ? '#e3f2fd' : 'var(--surface)', cursor: 'pointer' }}>
+                    {icon}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Cor */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Cor</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {colorOptions.map(color => (
+                  <button key={color} type="button" onClick={() => setFormData(f => ({ ...f, color }))}
+                    style={{ width: 36, height: 36, backgroundColor: color, border: formData.color === color ? '3px solid var(--text)' : '2px solid transparent', borderRadius: 8, cursor: 'pointer' }} />
+                ))}
+              </div>
+            </div>
+
+            {/* Preview */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', backgroundColor: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: formData.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+                {formData.icon}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, color: 'var(--text)', fontSize: 15 }}>
+                  {formData.name || 'Nome da categoria'}
+                </div>
+                {formData.parent_id && (
+                  <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                    ↳ {parentOptions.find(p => p.id === formData.parent_id)?.name || ''}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit"
+                style={{ flex: 1, padding: '11px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 15 }}>
+                {editingId ? '💾 Salvar' : '➕ Criar'}
               </button>
-            ))}
+              <button type="button" onClick={resetForm}
+                style={{ flex: 1, padding: '11px', backgroundColor: 'var(--border)', color: 'var(--text2)', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Lista em árvore */}
+        {categories.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🏷️</div>
+            <p>Nenhuma categoria ainda.</p>
           </div>
-        </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {categories.map(cat => {
+              const hasChildren = (cat.subcategories?.length || 0) > 0;
+              const isExpanded = expandedIds.has(cat.id);
 
-        <button onClick={generate} disabled={generating || !householdId}
-          style={{ width: '100%', padding: '15px', backgroundColor: generating ? 'var(--border)' : 'var(--green)', color: 'white', border: 'none', borderRadius: 12, cursor: generating ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 16 }}>
-          {generating ? '⏳ Gerando...' : `📤 Gerar ${format.toUpperCase()}`}
-        </button>
+              return (
+                <div key={cat.id}>
+                  {/* Categoria principal */}
+                  <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: 'var(--shadow)' }}>
+                    <div style={{ width: 46, height: 46, borderRadius: 10, backgroundColor: cat.color || '#3498db', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
+                      {cat.icon || '📁'}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{cat.name}</div>
+                      {hasChildren && (
+                        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                          {cat.subcategories!.length} subcategoria{cat.subcategories!.length > 1 ? 's' : ''}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {hasChildren && (
+                        <button onClick={() => toggleExpand(cat.id)}
+                          style={{ padding: '6px 10px', backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 14, color: 'var(--text3)' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </button>
+                      )}
+                      <button onClick={() => { setFormData(f => ({ ...f, parent_id: cat.id })); setShowForm(true); }}
+                        style={{ padding: '6px 10px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}
+                        title="Adicionar subcategoria">
+                        +↳
+                      </button>
+                      <button onClick={() => startEdit(cat)}
+                        style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        ✏️
+                      </button>
+                      <button onClick={() => handleDelete(cat.id, cat.name, hasChildren)}
+                        style={{ padding: '6px 10px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
 
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', marginTop: 12, lineHeight: 1.5 }}>
-          {format === 'pdf' ? 'Uma nova aba abrirá o relatório. Use Ctrl+P para salvar como PDF.' : 'Um arquivo .csv será baixado. Abra no Excel ou Google Sheets.'}
-        </p>
+                  {/* Subcategorias */}
+                  {hasChildren && isExpanded && (
+                    <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {cat.subcategories!.map(sub => (
+                        <div key={sub.id} style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, borderLeft: `3px solid ${cat.color || '#3498db'}` }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: -4 }}>↳</div>
+                          <div style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: sub.color || cat.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0, opacity: 0.9 }}>
+                            {sub.icon || cat.icon}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>{sub.name}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={() => startEdit(sub)}
+                              style={{ padding: '4px 8px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              ✏️
+                            </button>
+                            <button onClick={() => handleDelete(sub.id, sub.name, false)}
+                              style={{ padding: '4px 8px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </main>
     </>
   );
