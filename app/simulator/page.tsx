@@ -1,413 +1,344 @@
 'use client';
+// app/categories/page.tsx — Com suporte a subcategorias
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
+import Header from '@/app/components/Header';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
-const VOUCHER_TYPES = ['meal_voucher', 'food_voucher'];
-
-interface MonthProjection {
-  month: string;
-  monthKey: string;
-  income: number;
-  voucherIncome: number;
-  fixedExpenses: number;
-  simulatedExpense: number;
-  extras: { label: string; amount: number }[];
-  balance: number;
-  isNegative: boolean;
-  warnings: string[];
+interface Category {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  parent_id: string | null;
+  created_at: string;
+  subcategories?: Category[];
 }
 
-export default function SimulatorPage() {
-  const [householdId, setHouseholdId] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
+export default function CategoriesPage() {
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
-  const [simulating, setSimulating] = useState(false);
-
-  // Dados financeiros carregados
-  const [personalIncome, setPersonalIncome] = useState(0);
-  const [coupleIncome, setCoupleIncome] = useState(0);
-  const [personalVoucher, setPersonalVoucher] = useState(0);
-  const [coupleVoucher, setCoupleVoucher] = useState(0);
-  const [fixedExpenses, setFixedExpenses] = useState(0);
-  const [recurrences, setRecurrences] = useState<any[]>([]);
-  const [financings, setFinancings] = useState<any[]>([]);
-  const [intermediaries, setIntermediaries] = useState<any[]>([]);
-  const [invoices, setInvoices] = useState<any[]>([]);
-
-  // Parâmetros da simulação
-  const [scope, setScope] = useState<'personal' | 'couple'>('personal');
-  const [purchaseDescription, setPurchaseDescription] = useState('');
-  const [purchaseAmount, setPurchaseAmount] = useState('');
-  const [purchaseType, setPurchaseType] = useState<'cash' | 'installment'>('cash');
-  const [installments, setInstallments] = useState('1');
-  const [startMonth, setStartMonth] = useState(new Date().toISOString().slice(0, 7));
-  const [monthsAhead, setMonthsAhead] = useState('6');
-
-  // Resultado
-  const [projection, setProjection] = useState<MonthProjection[]>([]);
-  const [verdict, setVerdict] = useState<'ok' | 'warning' | 'danger' | null>(null);
-  const [verdictMessage, setVerdictMessage] = useState('');
-
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [householdId, setHouseholdId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [formData, setFormData] = useState({
+    name: '',
+    icon: '📁',
+    color: '#3498db',
+    parent_id: '',
+  });
   const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
-  useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { router.push('/login'); return; }
-      setUserId(user.id);
+  const iconOptions = ['🍔','🚗','🏠','💡','🎮','👕','💊','✈️','🎬','📚','🏋️','🐶','💰','🎁','📱','🛒','☕','🍕','🎵','⚽','🧴','🏥','🎓','💻','🌿'];
+  const colorOptions = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#34495e','#e91e63','#00bcd4'];
 
-      const { data: member } = await supabase
-        .from('household_members')
-        .select('household_id')
-        .eq('user_id', user.id)
-        .single();
+  useEffect(() => { checkAuth(); }, []);
 
-      if (!member) { router.push('/setup'); return; }
-      setHouseholdId(member.household_id);
-      await loadFinancialData(member.household_id, user.id);
-      setLoading(false);
-    }
-    init();
-  }, []);
-
-  async function loadFinancialData(hid: string, uid: string) {
-    const [incomesRes, recurrencesRes, financingsRes, intermediariesRes, invoicesRes] = await Promise.all([
-      supabase.from('incomes').select('*, accounts(type)').eq('household_id', hid).eq('recurrence', 'monthly'),
-      supabase.from('recurrence_rules').select('*, transactions(amount, description)').eq('household_id', hid).eq('active', true),
-      supabase.from('financings').select('*').eq('household_id', hid),
-      supabase.from('financing_intermediaries').select('*, financings(name, household_id)').eq('paid', false),
-      supabase.from('invoices').select('*, credit_cards(name, household_id)').eq('status', 'open'),
-    ]);
-
-    const allIncomes = incomesRes.data || [];
-
-    // Separa receitas normais de vouchers — por usuário e casal
-    const isVoucher = (i: any) => VOUCHER_TYPES.includes(i.accounts?.type);
-
-    const pIncome = allIncomes.filter(i => i.user_id === uid && !isVoucher(i)).reduce((s, i) => s + Number(i.amount), 0);
-    const pVoucher = allIncomes.filter(i => i.user_id === uid && isVoucher(i)).reduce((s, i) => s + Number(i.amount), 0);
-    const cIncome = allIncomes.filter(i => !isVoucher(i)).reduce((s, i) => s + Number(i.amount), 0);
-    const cVoucher = allIncomes.filter(i => isVoucher(i)).reduce((s, i) => s + Number(i.amount), 0);
-
-    setPersonalIncome(pIncome);
-    setPersonalVoucher(pVoucher);
-    setCoupleIncome(cIncome);
-    setCoupleVoucher(cVoucher);
-
-    setRecurrences(recurrencesRes.data || []);
-    setFinancings(financingsRes.data || []);
-
-    const allInter = (intermediariesRes.data || []).filter(i => i.financings?.household_id === hid);
-    setIntermediaries(allInter);
-
-    const allInvoices = (invoicesRes.data || []).filter(i => i.credit_cards?.household_id === hid);
-    setInvoices(allInvoices);
-
-    // Gastos fixos mensais
-    const recurrenceTotal = (recurrencesRes.data || []).reduce((s: number, r: any) => s + Number(r.transactions?.amount || 0), 0);
-    const financingTotal = (financingsRes.data || [])
-      .filter(f => f.paid_installments < f.total_installments)
-      .reduce((s: number, f: any) => s + Number(f.installment_amount), 0);
-
-    setFixedExpenses(recurrenceTotal + financingTotal);
+  async function checkAuth() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { router.push('/login'); return; }
+    const { data: memberData, error } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+    const memberData = members?.[0] ?? null;
+    if (!memberData) { router.push('/setup'); return; }
+    setHouseholdId(memberData.household_id);
+    loadCategories(memberData.household_id);
   }
 
-  const activeIncome = scope === 'personal' ? personalIncome : coupleIncome;
-  const activeVoucher = scope === 'personal' ? personalVoucher : coupleVoucher;
-  const freeBalance = activeIncome - fixedExpenses;
+  async function loadCategories(hid: string) {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('household_id', hid)
+      .order('name');
 
-  function simulate() {
-    if (!purchaseAmount || parseFloat(purchaseAmount) <= 0) {
-      alert('Digite o valor da compra');
-      return;
-    }
+    if (error) { setLoading(false); return; }
 
-    setSimulating(true);
+    // Monta a árvore: separa pais e filhos
+    const all = (data || []) as Category[];
+    const roots = all.filter(c => !c.parent_id);
+    roots.forEach(r => {
+      r.subcategories = all.filter(c => c.parent_id === r.id);
+    });
 
-    const totalAmount = parseFloat(purchaseAmount);
-    const numInstallments = purchaseType === 'installment' ? parseInt(installments) : 1;
-    const installmentValue = totalAmount / numInstallments;
-    const totalMonths = parseInt(monthsAhead);
+    setCategories(roots);
+    setLoading(false);
+  }
 
-    const months: MonthProjection[] = [];
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!formData.name.trim()) return;
 
-    for (let i = 0; i < totalMonths; i++) {
-      const d = new Date(startMonth + '-01');
-      d.setMonth(d.getMonth() + i);
-      const monthKey = d.toISOString().slice(0, 7);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { data: members } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+      const member = members?.[0] ?? null;
+    if (!member) return;
+    const hid = member.household_id;
 
-      const extras: { label: string; amount: number }[] = [];
-      const warnings: string[] = [];
+    const base: any = {
+      name: formData.name,
+      icon: formData.icon,
+      color: formData.color,
+      parent_id: formData.parent_id || null,
+    };
 
-      // Intermediárias do mês
-      const monthInters = intermediaries.filter(inter => inter.due_date?.slice(0, 7) === monthKey);
-      monthInters.forEach(inter => {
-        extras.push({ label: `🏢 Intermediária — ${inter.financings?.name || 'Financiamento'}`, amount: Number(inter.amount) });
-        warnings.push(`Intermediária de R$ ${Number(inter.amount).toFixed(2)} vence em ${new Date(inter.due_date + 'T12:00:00').toLocaleDateString('pt-BR')}`);
-      });
-
-      // Faturas abertas do mês
-      const monthInvoices = invoices.filter(inv => inv.month?.slice(0, 7) === monthKey);
-      monthInvoices.forEach(inv => {
-        extras.push({ label: `💳 Fatura ${inv.credit_cards?.name || 'Cartão'}`, amount: Number(inv.total) });
-      });
-
-      const simulatedExpense = i < numInstallments ? installmentValue : 0;
-      const extrasTotal = extras.reduce((s, e) => s + e.amount, 0);
-      const balance = activeIncome - fixedExpenses - simulatedExpense - extrasTotal;
-
-      if (balance < 0) warnings.push(`Saldo negativo de R$ ${Math.abs(balance).toFixed(2)}`);
-      else if (balance < activeIncome * 0.1) warnings.push(`Saldo muito apertado (menos de 10% da renda)`);
-
-      months.push({
-        month: d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' }),
-        monthKey,
-        income: activeIncome,
-        voucherIncome: activeVoucher,
-        fixedExpenses,
-        simulatedExpense,
-        extras,
-        balance,
-        isNegative: balance < 0,
-        warnings,
-      });
-    }
-
-    setProjection(months);
-
-    // Veredito
-    const negativeMonths = months.filter(m => m.isNegative);
-    const tightMonths = months.filter(m => !m.isNegative && m.balance < activeIncome * 0.1);
-
-    if (negativeMonths.length > 0) {
-      setVerdict('danger');
-      const worstMonths = negativeMonths.map(m => m.month).join(', ');
-      setVerdictMessage(`❌ Não recomendado. Você ficará negativo em: ${worstMonths}.`);
-    } else if (tightMonths.length >= 2) {
-      setVerdict('warning');
-      setVerdictMessage(`⚠️ Possível, mas arriscado. O orçamento ficará muito apertado em ${tightMonths.length} meses. Tenha reserva.`);
+    if (editingId) {
+      const payload = await encryptRecord(base);
+      const { error } = await supabase.from('categories').update(payload).eq('id', editingId);
+      if (error) { alert('Erro: ' + error.message); return; }
     } else {
-      setVerdict('ok');
-      const minBalance = Math.min(...months.map(m => m.balance));
-      setVerdictMessage(`✅ Compra viável! Seu saldo mínimo nos próximos ${totalMonths} meses será de R$ ${minBalance.toFixed(2)}.`);
+      const payload = await encryptRecord({ ...base, household_id: hid });
+      const { error } = await supabase.from('categories').insert(payload);
+      if (error) { alert('Erro: ' + error.message); return; }
     }
 
-    setSimulating(false);
+    resetForm();
+    loadCategories(hid);
   }
 
-  if (loading) return <main style={{ padding: 16 }}>Carregando dados financeiros...</main>;
+  async function handleDelete(id: string, name: string, hasChildren: boolean) {
+    const msg = hasChildren
+      ? `Deletar "${name}" e todas as suas subcategorias?`
+      : `Deletar "${name}"?`;
+    if (!confirm(msg)) return;
+    await supabase.from('categories').delete().eq('id', id);
+    if (householdId) loadCategories(householdId);
+  }
+
+  function startEdit(cat: Category) {
+    setEditingId(cat.id);
+    setFormData({ name: cat.name, icon: cat.icon || '📁', color: cat.color || '#3498db', parent_id: cat.parent_id || '' });
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function resetForm() {
+    setEditingId(null);
+    setFormData({ name: '', icon: '📁', color: '#3498db', parent_id: '' });
+    setShowForm(false);
+  }
+
+  function toggleExpand(id: string) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  // Categorias raiz para o select de pai (excluindo a própria ao editar)
+  const parentOptions = categories.filter(c => c.id !== editingId);
+
+  if (loading) return <main style={{ padding: 16, color: 'var(--text)' }}>Carregando...</main>;
 
   return (
-    <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ marginBottom: 4 }}>🧮 Simulador Financeiro</h1>
-        <p style={{ color: '#666', fontSize: 14 }}>Descubra se uma compra cabe no seu bolso antes de fazer</p>
-      </div>
+    <>
+      <Header title="Categorias" backHref="/dashboard" />
+      <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
 
-      {/* Resumo financeiro atual */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 24 }}>
-        <div style={{ background: 'linear-gradient(135deg, #2ecc71, #27ae60)', padding: 16, borderRadius: 12, color: 'white' }}>
-          <div style={{ fontSize: 12, opacity: 0.9 }}>Renda mensal</div>
-          <div style={{ fontSize: 20, fontWeight: 'bold' }}>R$ {activeIncome.toFixed(2)}</div>
-          <div style={{ fontSize: 11, opacity: 0.8 }}>{scope === 'personal' ? 'Pessoal' : 'Casal'}</div>
-        </div>
-        {activeVoucher > 0 && (
-          <div style={{ background: 'linear-gradient(135deg, #f39c12, #e67e22)', padding: 16, borderRadius: 12, color: 'white' }}>
-            <div style={{ fontSize: 12, opacity: 0.9 }}>VR/VA (separado)</div>
-            <div style={{ fontSize: 20, fontWeight: 'bold' }}>R$ {activeVoucher.toFixed(2)}</div>
-            <div style={{ fontSize: 11, opacity: 0.8 }}>Não entra no cálculo</div>
-          </div>
-        )}
-        <div style={{ background: 'linear-gradient(135deg, #e74c3c, #c0392b)', padding: 16, borderRadius: 12, color: 'white' }}>
-          <div style={{ fontSize: 12, opacity: 0.9 }}>Gastos fixos</div>
-          <div style={{ fontSize: 20, fontWeight: 'bold' }}>R$ {fixedExpenses.toFixed(2)}</div>
-        </div>
-        <div style={{ background: `linear-gradient(135deg, ${freeBalance >= 0 ? '#3498db, #2980b9' : '#e74c3c, #c0392b'})`, padding: 16, borderRadius: 12, color: 'white' }}>
-          <div style={{ fontSize: 12, opacity: 0.9 }}>Saldo livre</div>
-          <div style={{ fontSize: 20, fontWeight: 'bold' }}>R$ {freeBalance.toFixed(2)}</div>
-        </div>
-      </div>
-
-      {activeIncome === 0 && (
-        <div style={{ backgroundColor: '#fff3cd', border: '1px solid #ffc107', borderRadius: 8, padding: 12, marginBottom: 24, fontSize: 14 }}>
-          ⚠️ Nenhuma receita mensal cadastrada. <Link href="/incomes" style={{ color: '#3498db' }}>Cadastre suas receitas</Link> para o simulador funcionar corretamente.
-        </div>
-      )}
-
-      {/* Formulário */}
-      <div style={{ backgroundColor: '#f8f9fa', padding: 20, borderRadius: 12, marginBottom: 24, border: '1px solid #ddd' }}>
-        <h2 style={{ marginTop: 0, marginBottom: 16 }}>🛒 O que você quer comprar?</h2>
-
-        {/* Escopo */}
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>Simular para:</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <button type="button" onClick={() => setScope('personal')}
-              style={{ padding: 12, border: scope === 'personal' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: scope === 'personal' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: scope === 'personal' ? 'bold' : 'normal' }}
-            >
-              👤 Minha renda<br />
-              <span style={{ fontSize: 12, color: '#666' }}>R$ {personalIncome.toFixed(2)}/mês</span>
-            </button>
-            <button type="button" onClick={() => setScope('couple')}
-              style={{ padding: 12, border: scope === 'couple' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: scope === 'couple' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: scope === 'couple' ? 'bold' : 'normal' }}
-            >
-              👥 Renda do casal<br />
-              <span style={{ fontSize: 12, color: '#666' }}>R$ {coupleIncome.toFixed(2)}/mês</span>
-            </button>
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Descrição da compra:</label>
-          <input
-            type="text" value={purchaseDescription}
-            onChange={(e) => setPurchaseDescription(e.target.value)}
-            placeholder="Ex: iPhone 15, Sofá, Viagem..."
-            style={{ width: '100%', padding: 10, fontSize: 16, borderRadius: 8, border: '1px solid #ccc' }}
-          />
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        {/* Header da página */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <div>
-            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Valor total:</label>
-            <input
-              type="number" value={purchaseAmount}
-              onChange={(e) => setPurchaseAmount(e.target.value)}
-              placeholder="0.00" step="0.01" min="0"
-              style={{ width: '100%', padding: 10, fontSize: 16, borderRadius: 8, border: '1px solid #ccc' }}
-            />
+            <h1 style={{ color: 'var(--text)', margin: 0 }}>Categorias</h1>
+            <p style={{ color: 'var(--text3)', fontSize: 13, margin: '4px 0 0' }}>
+              {categories.length} categorias · {categories.reduce((n, c) => n + (c.subcategories?.length || 0), 0)} subcategorias
+            </p>
           </div>
-          <div>
-            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Projetar por:</label>
-            <select value={monthsAhead} onChange={(e) => setMonthsAhead(e.target.value)}
-              style={{ width: '100%', padding: 10, fontSize: 16, borderRadius: 8, border: '1px solid #ccc' }}>
-              <option value="3">3 meses</option>
-              <option value="6">6 meses</option>
-              <option value="12">12 meses</option>
-              <option value="24">24 meses</option>
-            </select>
-          </div>
+          <button
+            onClick={() => { if (showForm) resetForm(); else setShowForm(true); }}
+            style={{ padding: '8px 16px', backgroundColor: showForm ? '#e74c3c' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+            {showForm ? '✖️ Cancelar' : '➕ Nova'}
+          </button>
         </div>
 
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>Forma de pagamento:</label>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <button type="button" onClick={() => setPurchaseType('cash')}
-              style={{ padding: 12, border: purchaseType === 'cash' ? '2px solid #2ecc71' : '1px solid #ddd', borderRadius: 8, backgroundColor: purchaseType === 'cash' ? '#e8f8f0' : 'white', cursor: 'pointer', fontWeight: purchaseType === 'cash' ? 'bold' : 'normal' }}
-            >💵 À vista</button>
-            <button type="button" onClick={() => setPurchaseType('installment')}
-              style={{ padding: 12, border: purchaseType === 'installment' ? '2px solid #2ecc71' : '1px solid #ddd', borderRadius: 8, backgroundColor: purchaseType === 'installment' ? '#e8f8f0' : 'white', cursor: 'pointer', fontWeight: purchaseType === 'installment' ? 'bold' : 'normal' }}
-            >📅 Parcelado</button>
-          </div>
-        </div>
+        {/* Formulário */}
+        {showForm && (
+          <form onSubmit={handleSubmit} style={{ backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', padding: 20, borderRadius: 12, marginBottom: 24 }}>
+            <h3 style={{ marginTop: 0, color: 'var(--text)', marginBottom: 16 }}>
+              {editingId ? '✏️ Editar categoria' : '➕ Nova categoria'}
+            </h3>
 
-        {purchaseType === 'installment' && (
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Número de parcelas:</label>
-            <input
-              type="number" value={installments}
-              onChange={(e) => setInstallments(e.target.value)}
-              placeholder="Ex: 12" min="2" max="60"
-              style={{ width: '100%', padding: 10, fontSize: 16, borderRadius: 8, border: '1px solid #ccc' }}
-            />
-            {purchaseAmount && installments && (
-              <div style={{ marginTop: 8, fontSize: 14, color: '#666' }}>
-                Parcela de <strong style={{ color: '#e74c3c' }}>R$ {(parseFloat(purchaseAmount) / parseInt(installments)).toFixed(2)}</strong>/mês
+            {/* Categoria pai */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>
+                Tipo
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: !formData.parent_id ? '2px solid #3498db' : '1px solid var(--border)', backgroundColor: !formData.parent_id ? '#e8f4ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: !formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  🏷️ Categoria principal
+                </button>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: parentOptions[0]?.id || '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: formData.parent_id ? '2px solid #9b59b6' : '1px solid var(--border)', backgroundColor: formData.parent_id ? '#f3e8ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  ↳ Subcategoria
+                </button>
+              </div>
+            </div>
+
+            {/* Select de pai — aparece apenas se for subcategoria */}
+            {formData.parent_id !== '' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Categoria pai</label>
+                <select value={formData.parent_id} onChange={e => setFormData(f => ({ ...f, parent_id: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14 }}>
+                  {parentOptions.length === 0
+                    ? <option value="">Crie uma categoria principal primeiro</option>
+                    : parentOptions.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)
+                  }
+                </select>
               </div>
             )}
-          </div>
+
+            {/* Nome */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Nome</label>
+              <input type="text" value={formData.name} onChange={e => setFormData(f => ({ ...f, name: e.target.value }))}
+                placeholder={formData.parent_id ? 'Ex: Supermercado, iFood...' : 'Ex: Alimentação, Transporte...'}
+                required style={{ width: '100%', padding: '9px 12px', fontSize: 15, borderRadius: 8, border: '1px solid var(--border)' }} />
+            </div>
+
+            {/* Ícone */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Ícone</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {iconOptions.map(icon => (
+                  <button key={icon} type="button" onClick={() => setFormData(f => ({ ...f, icon }))}
+                    style={{ fontSize: 22, padding: 7, border: formData.icon === icon ? '2px solid #3498db' : '1px solid var(--border)', borderRadius: 8, backgroundColor: formData.icon === icon ? '#e3f2fd' : 'var(--surface)', cursor: 'pointer' }}>
+                    {icon}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Cor */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Cor</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {colorOptions.map(color => (
+                  <button key={color} type="button" onClick={() => setFormData(f => ({ ...f, color }))}
+                    style={{ width: 36, height: 36, backgroundColor: color, border: formData.color === color ? '3px solid var(--text)' : '2px solid transparent', borderRadius: 8, cursor: 'pointer' }} />
+                ))}
+              </div>
+            </div>
+
+            {/* Preview */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', backgroundColor: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: formData.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+                {formData.icon}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, color: 'var(--text)', fontSize: 15 }}>
+                  {formData.name || 'Nome da categoria'}
+                </div>
+                {formData.parent_id && (
+                  <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                    ↳ {parentOptions.find(p => p.id === formData.parent_id)?.name || ''}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit"
+                style={{ flex: 1, padding: '11px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 15 }}>
+                {editingId ? '💾 Salvar' : '➕ Criar'}
+              </button>
+              <button type="button" onClick={resetForm}
+                style={{ flex: 1, padding: '11px', backgroundColor: 'var(--border)', color: 'var(--text2)', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
+          </form>
         )}
 
-        <div style={{ marginBottom: 20 }}>
-          <label style={{ display: 'block', marginBottom: 4, fontWeight: 'bold' }}>Mês inicial da compra:</label>
-          <input
-            type="month" value={startMonth}
-            onChange={(e) => setStartMonth(e.target.value)}
-            style={{ width: '100%', padding: 10, fontSize: 16, borderRadius: 8, border: '1px solid #ccc' }}
-          />
-        </div>
+        {/* Lista em árvore */}
+        {categories.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🏷️</div>
+            <p>Nenhuma categoria ainda.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {categories.map(cat => {
+              const hasChildren = (cat.subcategories?.length || 0) > 0;
+              const isExpanded = expandedIds.has(cat.id);
 
-        <button
-          onClick={simulate}
-          disabled={simulating || !purchaseAmount}
-          style={{ width: '100%', padding: '14px 24px', fontSize: 18, fontWeight: 'bold', backgroundColor: simulating || !purchaseAmount ? '#95a5a6' : '#3498db', color: 'white', border: 'none', borderRadius: 8, cursor: simulating || !purchaseAmount ? 'not-allowed' : 'pointer' }}
-        >
-          {simulating ? '⏳ Simulando...' : '🧮 Simular compra'}
-        </button>
-      </div>
-
-      {/* Veredito */}
-      {verdict && (
-        <div style={{
-          padding: 20, borderRadius: 12, marginBottom: 24,
-          backgroundColor: verdict === 'ok' ? '#e8f8f0' : verdict === 'warning' ? '#fff8e1' : '#fdecea',
-          border: `2px solid ${verdict === 'ok' ? '#2ecc71' : verdict === 'warning' ? '#f39c12' : '#e74c3c'}`,
-        }}>
-          <h2 style={{ margin: '0 0 8px 0', color: verdict === 'ok' ? '#27ae60' : verdict === 'warning' ? '#e67e22' : '#c0392b' }}>
-            {purchaseDescription || 'Resultado da simulação'}
-          </h2>
-          <p style={{ margin: 0, fontSize: 16 }}>{verdictMessage}</p>
-          {activeVoucher > 0 && (
-            <p style={{ margin: '8px 0 0 0', fontSize: 13, color: '#666' }}>
-              🍽️ Nota: seu VR/VA de R$ {activeVoucher.toFixed(2)}/mês não foi contabilizado acima pois é de uso restrito (alimentação).
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Projeção mês a mês */}
-      {projection.length > 0 && (
-        <div>
-          <h2 style={{ marginBottom: 16 }}>📅 Projeção mês a mês</h2>
-          {projection.map((month, i) => (
-            <div key={i} style={{
-              border: month.isNegative ? '2px solid #e74c3c' : '1px solid #ddd',
-              borderRadius: 12, marginBottom: 12,
-              backgroundColor: month.isNegative ? '#fdecea' : 'white',
-              overflow: 'hidden',
-            }}>
-              <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ fontWeight: 'bold', fontSize: 16, textTransform: 'capitalize' }}>{month.month}</div>
-                  <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
-                    Renda: R$ {month.income.toFixed(2)}
-                    {' · '}Fixos: R$ {month.fixedExpenses.toFixed(2)}
-                    {month.simulatedExpense > 0 && ` · Compra: R$ ${month.simulatedExpense.toFixed(2)}`}
-                    {month.extras.length > 0 && ` · Extras: R$ ${month.extras.reduce((s, e) => s + e.amount, 0).toFixed(2)}`}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontWeight: 'bold', fontSize: 20, color: month.isNegative ? '#e74c3c' : '#2ecc71' }}>
-                    {month.isNegative ? '-' : '+'}R$ {Math.abs(month.balance).toFixed(2)}
-                  </div>
-                  <div style={{ fontSize: 12, color: month.isNegative ? '#e74c3c' : '#666' }}>
-                    {month.isNegative ? '⚠️ Negativo' : 'Saldo restante'}
-                  </div>
-                </div>
-              </div>
-
-              {(month.extras.length > 0 || month.warnings.filter(w => !w.includes('Saldo') && !w.includes('apertado')).length > 0) && (
-                <div style={{ padding: '8px 16px 12px', borderTop: '1px solid #eee', backgroundColor: month.isNegative ? '#fff5f5' : '#fafafa' }}>
-                  {month.extras.map((extra, j) => (
-                    <div key={j} style={{ fontSize: 13, color: '#e67e22', marginBottom: 2 }}>
-                      ⚡ {extra.label}: R$ {extra.amount.toFixed(2)}
+              return (
+                <div key={cat.id}>
+                  {/* Categoria principal */}
+                  <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: 'var(--shadow)' }}>
+                    <div style={{ width: 46, height: 46, borderRadius: 10, backgroundColor: cat.color || '#3498db', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
+                      {cat.icon || '📁'}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{cat.name}</div>
+                      {hasChildren && (
+                        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                          {cat.subcategories!.length} subcategoria{cat.subcategories!.length > 1 ? 's' : ''}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {hasChildren && (
+                        <button onClick={() => toggleExpand(cat.id)}
+                          style={{ padding: '6px 10px', backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 14, color: 'var(--text3)' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </button>
+                      )}
+                      <button onClick={() => { setFormData(f => ({ ...f, parent_id: cat.id })); setShowForm(true); }}
+                        style={{ padding: '6px 10px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}
+                        title="Adicionar subcategoria">
+                        +↳
+                      </button>
+                      <button onClick={() => startEdit(cat)}
+                        style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        ✏️
+                      </button>
+                      <button onClick={() => handleDelete(cat.id, cat.name, hasChildren)}
+                        style={{ padding: '6px 10px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
 
-      <div style={{ marginTop: 24 }}>
-        <Link href="/dashboard">
-          <button style={{ padding: '12px 24px', fontSize: 16 }}>⬅️ Voltar ao Dashboard</button>
-        </Link>
-      </div>
-    </main>
+                  {/* Subcategorias */}
+                  {hasChildren && isExpanded && (
+                    <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {cat.subcategories!.map(sub => (
+                        <div key={sub.id} style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, borderLeft: `3px solid ${cat.color || '#3498db'}` }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: -4 }}>↳</div>
+                          <div style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: sub.color || cat.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0, opacity: 0.9 }}>
+                            {sub.icon || cat.icon}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>{sub.name}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={() => startEdit(sub)}
+                              style={{ padding: '4px 8px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              ✏️
+                            </button>
+                            <button onClick={() => handleDelete(sub.id, sub.name, false)}
+                              style={{ padding: '4px 8px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </main>
+    </>
   );
 }
