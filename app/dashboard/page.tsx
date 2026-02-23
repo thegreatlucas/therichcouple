@@ -52,33 +52,30 @@ export default function Dashboard() {
   const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   useEffect(() => {
-    // ✅ CORRIGIDO: não depende do contexto para decidir o redirect.
-    // Consulta o Supabase diretamente para evitar race condition com o Provider.
-    async function checkAndInit() {
+    async function bootstrap() {
+      // 1. Verifica autenticação
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { router.push('/login'); return; }
 
-      // Busca direto no banco — fonte da verdade, sem depender do contexto
-      const { data: member } = await supabase
+      // 2. Verifica se o usuário tem household — direto no banco, sem depender do contexto
+      const { data: members, error } = await supabase
         .from('household_members')
         .select('household_id')
-        .eq('user_id', user.id)
-        .limit(1)
-        .maybeSingle();
+        .eq('user_id', user.id);
 
-      if (!member?.household_id) {
+      if (error || !members || members.length === 0) {
         router.push('/setup');
         return;
       }
 
-      // Se o contexto já carregou com o groupId correto, usa ele
-      // Senão, usa o household_id direto do banco
-      const groupId = activeGroupId || member.household_id;
+      // 3. Usa o contexto se já estiver pronto, senão usa o primeiro da lista
+      const groupId = activeGroupId || members[0].household_id;
       init(groupId);
     }
 
-    checkAndInit();
-  }, []); // ✅ Roda uma vez ao montar — sem dependência de contexto instável
+    bootstrap();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function init(groupId: string) {
     const { data: { user } } = await supabase.auth.getUser();
