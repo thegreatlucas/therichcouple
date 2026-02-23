@@ -45,7 +45,7 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
         return;
       }
 
-      const { data: rows } = await supabase
+      const { data: rows, error: queryError } = await supabase
         .from('household_members')
         .select(
           `
@@ -55,12 +55,9 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
             id,
             name,
             ship_name,
-            group_type,
             invite_code,
             close_mode,
             close_day,
-            color,
-            icon,
             onboarding_done,
             encrypted_key
           )
@@ -70,20 +67,29 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
 
       if (cancelled) return;
 
+      // Se a query falhou (ex: coluna inexistente no banco), aborta silenciosamente
+      if (queryError) {
+        console.error('[FinanceGroupContext] Erro ao carregar grupos:', queryError.message);
+        setGroups([]);
+        setMembers([]);
+        setActiveGroupIdState(null);
+        setLoading(false);
+        return;
+      }
+
       const groupsMapped: FinanceGroup[] = [];
       const membersMapped: FinanceMember[] = [];
 
       for (const row of (rows as any[]) || []) {
         const hh = (row as any).households;
         if (!hh) continue;
-        const groupType: FinanceGroupType = (hh.group_type as FinanceGroupType) || 'couple';
         const hasCrypto = !!hh.encrypted_key;
 
         groupsMapped.push({
           id: hh.id,
           name: hh.name,
           shipName: hh.ship_name,
-          groupType,
+          groupType: (hh.group_type as FinanceGroupType) || 'couple',
           inviteCode: hh.invite_code,
           closeMode: (hh.close_mode as 'manual' | 'auto') || 'manual',
           closeDay: hh.close_day ?? null,
