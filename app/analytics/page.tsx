@@ -1,411 +1,343 @@
 'use client';
+// app/categories/page.tsx — Com suporte a subcategorias
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import Header from '@/app/components/Header';
-import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar } from 'recharts';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
-interface CategoryData {
+interface Category {
+  id: string;
   name: string;
-  value: number;
-  color: string;
   icon: string;
+  color: string;
+  parent_id: string | null;
+  created_at: string;
+  subcategories?: Category[];
 }
 
-interface MonthlyData {
-  month: string;
-  amount: number;
-}
-
-export default function AnalyticsPage() {
-  const [householdId, setHouseholdId] = useState<string | null>(null);
-  const [categoryData, setCategoryData] = useState<CategoryData[]>([]);
-  const [monthlyData, setMonthlyData] = useState<MonthlyData[]>([]);
-  const [insights, setInsights] = useState<string[]>([]);
-  const [period, setPeriod] = useState('3months');
-  const [totalSpent, setTotalSpent] = useState(0);
-  const [avgPerDay, setAvgPerDay] = useState(0);
-  const [topCategory, setTopCategory] = useState('');
-  const [totalInterestPaid, setTotalInterestPaid] = useState(0);
-  const [interestTransactions, setInterestTransactions] = useState<any[]>([]);
+export default function CategoriesPage() {
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [householdId, setHouseholdId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [formData, setFormData] = useState({
+    name: '',
+    icon: '📁',
+    color: '#3498db',
+    parent_id: '',
+  });
   const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
-  useEffect(() => {
-    async function loadHousehold() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { router.push('/login'); return; }
+  const iconOptions = ['🍔','🚗','🏠','💡','🎮','👕','💊','✈️','🎬','📚','🏋️','🐶','💰','🎁','📱','🛒','☕','🍕','🎵','⚽','🧴','🏥','🎓','💻','🌿'];
+  const colorOptions = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#34495e','#e91e63','#00bcd4'];
 
-      const { data: members } = await supabase
-        .from('household_members')
-        .select('household_id')
-        .eq('user_id', user.id)
-        .limit(1)
-        .single();
+  useEffect(() => { checkAuth(); }, []);
 
-      if (members) setHouseholdId(members.household_id);
-      setLoading(false);
-    }
-    loadHousehold();
-  }, [router]);
+  async function checkAuth() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { router.push('/login'); return; }
+    const { data: memberData, error } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+    const memberData = members?.[0] ?? null;
+    if (!memberData) { router.push('/setup'); return; }
+    setHouseholdId(memberData.household_id);
+    loadCategories(memberData.household_id);
+  }
 
-  useEffect(() => {
-    if (!householdId) return;
+  async function loadCategories(hid: string) {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('household_id', hid)
+      .order('name');
 
-    async function loadAnalytics() {
-      const now = new Date();
-      let startDate: Date;
+    if (error) { setLoading(false); return; }
 
-      switch (period) {
-        case '3months': startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1); break;
-        case '6months': startDate = new Date(now.getFullYear(), now.getMonth() - 6, 1); break;
-        case 'year': startDate = new Date(now.getFullYear() - 1, now.getMonth(), 1); break;
-        default: startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
-      }
+    // Monta a árvore: separa pais e filhos
+    const all = (data || []) as Category[];
+    const roots = all.filter(c => !c.parent_id);
+    roots.forEach(r => {
+      r.subcategories = all.filter(c => c.parent_id === r.id);
+    });
 
-      const startDateStr = startDate.toISOString().split('T')[0];
+    setCategories(roots);
+    setLoading(false);
+  }
 
-      const { data: transactions, error } = await supabase
-        .from('transactions')
-        .select('*, categories(name, icon, color)')
-        .eq('household_id', householdId)
-        .gte('date', startDateStr)
-        .order('date', { ascending: true });
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!formData.name.trim()) return;
 
-      if (error) { console.error('Erro ao buscar transações:', error); return; }
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { data: members } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+      const member = members?.[0] ?? null;
+    if (!member) return;
+    const hid = member.household_id;
 
-      if (!transactions || transactions.length === 0) {
-        setCategoryData([]);
-        setMonthlyData([]);
-        setInsights(['📭 Nenhum gasto registrado neste período']);
-        setTotalSpent(0);
-        setAvgPerDay(0);
-        setTotalInterestPaid(0);
-        setInterestTransactions([]);
-        return;
-      }
+    const base: any = {
+      name: formData.name,
+      icon: formData.icon,
+      color: formData.color,
+      parent_id: formData.parent_id || null,
+    };
 
-      // Processa categorias
-      const categoryMap = new Map<string, CategoryData>();
-      let total = 0;
-
-      transactions.forEach((t) => {
-        total += t.amount;
-        const catName = t.categories?.name || 'Sem categoria';
-        const existing = categoryMap.get(catName);
-        if (existing) {
-          existing.value += t.amount;
-        } else {
-          categoryMap.set(catName, {
-            name: catName,
-            value: t.amount,
-            color: t.categories?.color || '#95a5a6',
-            icon: t.categories?.icon || '📁'
-          });
-        }
-      });
-
-      const catData = Array.from(categoryMap.values()).sort((a, b) => b.value - a.value);
-      setCategoryData(catData);
-      setTotalSpent(total);
-
-      // Processa dados mensais
-      const monthlyMap = new Map<string, number>();
-      transactions.forEach((t) => {
-        const month = t.date.slice(0, 7);
-        monthlyMap.set(month, (monthlyMap.get(month) || 0) + t.amount);
-      });
-
-      const monthlyArray = Array.from(monthlyMap.entries()).map(([month, amount]) => ({
-        month: new Date(month + '-01').toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
-        amount
-      }));
-      setMonthlyData(monthlyArray);
-
-      // Calcula juros pagos no período
-      const interestTxs = transactions.filter(t =>
-        t.total_with_interest != null &&
-        t.original_amount != null &&
-        t.total_with_interest > t.original_amount
-      );
-      const totalInterest = interestTxs.reduce((sum, t) =>
-        sum + (Number(t.total_with_interest) - Number(t.original_amount)), 0
-      );
-      setTotalInterestPaid(totalInterest);
-      setInterestTransactions(interestTxs);
-
-      // Insights
-      const days = Math.ceil((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-      const avgDay = total / days;
-      setAvgPerDay(avgDay);
-
-      if (catData.length > 0) {
-        setTopCategory(catData[0].name);
-        generateInsights(catData, total, avgDay, monthlyArray, totalInterest, interestTxs);
-      }
-    }
-
-    loadAnalytics();
-  }, [householdId, period]);
-
-  function generateInsights(
-    catData: CategoryData[],
-    total: number,
-    avgDay: number,
-    monthly: MonthlyData[],
-    totalInterest: number,
-    interestTxs: any[]
-  ) {
-    const insightsList: string[] = [];
-
-    if (catData.length > 0) {
-      const topCat = catData[0];
-      const percentage = ((topCat.value / total) * 100).toFixed(0);
-      insightsList.push(`${topCat.icon} Você gasta ${percentage}% do seu dinheiro em ${topCat.name}`);
-    }
-
-    insightsList.push(`💸 Sua média de gasto é R$ ${avgDay.toFixed(2)} por dia`);
-
-    if (monthly.length >= 2) {
-      const lastMonth = monthly[monthly.length - 1].amount;
-      const prevMonth = monthly[monthly.length - 2].amount;
-      const diff = lastMonth - prevMonth;
-      const diffPercent = ((diff / prevMonth) * 100).toFixed(0);
-      if (diff > 0) {
-        insightsList.push(`📈 Seus gastos aumentaram ${diffPercent}% no último mês`);
-      } else if (diff < 0) {
-        insightsList.push(`📉 Parabéns! Você economizou ${Math.abs(parseFloat(diffPercent))}% no último mês`);
-      } else {
-        insightsList.push(`➡️ Seus gastos se mantiveram estáveis no último mês`);
-      }
-    }
-
-    const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-    const projection = avgDay * daysInMonth;
-    insightsList.push(`🔮 Projeção para o mês: R$ ${projection.toFixed(2)}`);
-
-    if (catData.length >= 3) {
-      const top3 = catData.slice(0, 3);
-      const top3Total = top3.reduce((sum, cat) => sum + cat.value, 0);
-      const top3Percent = ((top3Total / total) * 100).toFixed(0);
-      insightsList.push(`🎯 ${top3Percent}% dos gastos estão em apenas 3 categorias`);
-    }
-
-    // Insight de juros
-    if (totalInterest > 0) {
-      const interestPercOfTotal = ((totalInterest / total) * 100).toFixed(1);
-      insightsList.push(`📈 Você pagou R$ ${totalInterest.toFixed(2)} em juros neste período (${interestPercOfTotal}% do total gasto)`);
-
-      if (interestTxs.length > 0) {
-        const biggestInterest = interestTxs.reduce((max, t) =>
-          (Number(t.total_with_interest) - Number(t.original_amount)) > (Number(max.total_with_interest) - Number(max.original_amount)) ? t : max
-        );
-        const biggestInterestAmount = Number(biggestInterest.total_with_interest) - Number(biggestInterest.original_amount);
-        insightsList.push(`💳 A compra "${biggestInterest.description}" teve o maior custo de juros: R$ ${biggestInterestAmount.toFixed(2)} a mais`);
-      }
-
-      if (totalInterest > 100) {
-        insightsList.push(`💡 Dica: com R$ ${totalInterest.toFixed(2)} em juros você poderia ter comprado à vista e economizado esse valor`);
-      }
+    if (editingId) {
+      const payload = await encryptRecord(base);
+      const { error } = await supabase.from('categories').update(payload).eq('id', editingId);
+      if (error) { alert('Erro: ' + error.message); return; }
     } else {
-      insightsList.push(`✅ Parabéns! Nenhum juro pago neste período — todas as compras parceladas foram sem juros`);
+      const payload = await encryptRecord({ ...base, household_id: hid });
+      const { error } = await supabase.from('categories').insert(payload);
+      if (error) { alert('Erro: ' + error.message); return; }
     }
 
-    setInsights(insightsList);
+    resetForm();
+    loadCategories(hid);
   }
 
-  const RADIAN = Math.PI / 180;
-  const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
-    const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-    const x = cx + radius * Math.cos(-midAngle * RADIAN);
-    const y = cy + radius * Math.sin(-midAngle * RADIAN);
-    if (percent < 0.05) return null;
-    return (
-      <text x={x} y={y} fill="white" textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontWeight="bold" fontSize="14">
-        {`${(percent * 100).toFixed(0)}%`}
-      </text>
-    );
-  };
-
-  if (loading) {
-    return (
-      <main style={{ padding: 16, textAlign: 'center' }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>📊</div>
-        <h2>Carregando Analytics...</h2>
-      </main>
-    );
+  async function handleDelete(id: string, name: string, hasChildren: boolean) {
+    const msg = hasChildren
+      ? `Deletar "${name}" e todas as suas subcategorias?`
+      : `Deletar "${name}"?`;
+    if (!confirm(msg)) return;
+    await supabase.from('categories').delete().eq('id', id);
+    if (householdId) loadCategories(householdId);
   }
 
-  if (!householdId) {
-    return (
-      <main style={{ padding: 16, textAlign: 'center' }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
-        <h2>Você não está em nenhum casal ainda</h2>
-        <Link href="/dashboard"><button style={{ padding: '12px 24px', marginTop: 16 }}>Voltar</button></Link>
-      </main>
-    );
+  function startEdit(cat: Category) {
+    setEditingId(cat.id);
+    setFormData({ name: cat.name, icon: cat.icon || '📁', color: cat.color || '#3498db', parent_id: cat.parent_id || '' });
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+
+  function resetForm() {
+    setEditingId(null);
+    setFormData({ name: '', icon: '📁', color: '#3498db', parent_id: '' });
+    setShowForm(false);
+  }
+
+  function toggleExpand(id: string) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  // Categorias raiz para o select de pai (excluindo a própria ao editar)
+  const parentOptions = categories.filter(c => c.id !== editingId);
+
+  if (loading) return <main style={{ padding: 16, color: 'var(--text)' }}>Carregando...</main>;
 
   return (
     <>
-      <Header title="Analytics" backHref="/dashboard" />
-      <main style={{ padding: 16, maxWidth: 1200, margin: '0 auto' }}>
-        <div style={{ marginBottom: 24 }}>
-          <h1 style={{ marginBottom: 8 }}>📊 Analytics & Insights</h1>
-          <p style={{ color: '#666', fontSize: 14 }}>Análise detalhada dos seus gastos</p>
+      <Header title="Categorias" backHref="/dashboard" />
+      <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
+
+        {/* Header da página */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div>
+            <h1 style={{ color: 'var(--text)', margin: 0 }}>Categorias</h1>
+            <p style={{ color: 'var(--text3)', fontSize: 13, margin: '4px 0 0' }}>
+              {categories.length} categorias · {categories.reduce((n, c) => n + (c.subcategories?.length || 0), 0)} subcategorias
+            </p>
+          </div>
+          <button
+            onClick={() => { if (showForm) resetForm(); else setShowForm(true); }}
+            style={{ padding: '8px 16px', backgroundColor: showForm ? '#e74c3c' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+            {showForm ? '✖️ Cancelar' : '➕ Nova'}
+          </button>
         </div>
 
-        <div style={{ marginBottom: 24 }}>
-          <label style={{ fontWeight: 'bold', marginRight: 12 }}>📅 Período:</label>
-          <select value={period} onChange={(e) => setPeriod(e.target.value)}
-            style={{ padding: 8, fontSize: 16, borderRadius: 8, border: '1px solid #ddd' }}>
-            <option value="3months">Últimos 3 meses</option>
-            <option value="6months">Últimos 6 meses</option>
-            <option value="year">Último ano</option>
-          </select>
-        </div>
+        {/* Formulário */}
+        {showForm && (
+          <form onSubmit={handleSubmit} style={{ backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', padding: 20, borderRadius: 12, marginBottom: 24 }}>
+            <h3 style={{ marginTop: 0, color: 'var(--text)', marginBottom: 16 }}>
+              {editingId ? '✏️ Editar categoria' : '➕ Nova categoria'}
+            </h3>
 
-        {/* Cards de resumo — agora com juros */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 32 }}>
-          <div style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Total Gasto</div>
-            <div style={{ fontSize: 28, fontWeight: 'bold' }}>R$ {totalSpent.toFixed(2)}</div>
-          </div>
-          <div style={{ background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)', padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Média por Dia</div>
-            <div style={{ fontSize: 28, fontWeight: 'bold' }}>R$ {avgPerDay.toFixed(2)}</div>
-          </div>
-          <div style={{ background: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)', padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Top Categoria</div>
-            <div style={{ fontSize: 24, fontWeight: 'bold' }}>{topCategory || 'N/A'}</div>
-          </div>
-          <div style={{
-            background: totalInterestPaid > 0
-              ? 'linear-gradient(135deg, #e74c3c 0%, #c0392b 100%)'
-              : 'linear-gradient(135deg, #2ecc71 0%, #27ae60 100%)',
-            padding: 20, borderRadius: 12, color: 'white', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-          }}>
-            <div style={{ fontSize: 14, marginBottom: 8, opacity: 0.9 }}>Juros Pagos</div>
-            <div style={{ fontSize: 28, fontWeight: 'bold' }}>R$ {totalInterestPaid.toFixed(2)}</div>
-            <div style={{ fontSize: 12, opacity: 0.8 }}>
-              {totalInterestPaid > 0 ? `${interestTransactions.length} compra(s) com juros` : '✅ Sem juros'}
+            {/* Categoria pai */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>
+                Tipo
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: !formData.parent_id ? '2px solid #3498db' : '1px solid var(--border)', backgroundColor: !formData.parent_id ? '#e8f4ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: !formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  🏷️ Categoria principal
+                </button>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: parentOptions[0]?.id || '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: formData.parent_id ? '2px solid #9b59b6' : '1px solid var(--border)', backgroundColor: formData.parent_id ? '#f3e8ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  ↳ Subcategoria
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
 
-        {/* Detalhamento de juros — só aparece se houver */}
-        {totalInterestPaid > 0 && (
-          <div style={{ backgroundColor: '#fdecea', border: '2px solid #e74c3c', borderRadius: 12, padding: 20, marginBottom: 32 }}>
-            <h2 style={{ marginTop: 0, marginBottom: 16, color: '#c0392b' }}>📈 Detalhamento de Juros</h2>
-            <div style={{ display: 'grid', gap: 10 }}>
-              {interestTransactions.map((t, i) => {
-                const interest = Number(t.total_with_interest) - Number(t.original_amount);
-                const interestPct = ((interest / Number(t.original_amount)) * 100).toFixed(1);
-                return (
-                  <div key={i} style={{ backgroundColor: 'white', padding: 12, borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: '1px solid #f5b7b1' }}>
-                    <div>
-                      <div style={{ fontWeight: 'bold' }}>{t.description}</div>
-                      <div style={{ fontSize: 12, color: '#666', marginTop: 2 }}>
-                        {new Date(t.date + 'T12:00:00').toLocaleDateString('pt-BR')}
-                        {' · '}{t.installments_count}x de R$ {Number(t.installment_value).toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: 12, color: '#888', marginTop: 1 }}>
-                        Original: R$ {Number(t.original_amount).toFixed(2)} → Total: R$ {Number(t.total_with_interest).toFixed(2)}
-                      </div>
+            {/* Select de pai — aparece apenas se for subcategoria */}
+            {formData.parent_id !== '' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Categoria pai</label>
+                <select value={formData.parent_id} onChange={e => setFormData(f => ({ ...f, parent_id: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14 }}>
+                  {parentOptions.length === 0
+                    ? <option value="">Crie uma categoria principal primeiro</option>
+                    : parentOptions.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)
+                  }
+                </select>
+              </div>
+            )}
+
+            {/* Nome */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Nome</label>
+              <input type="text" value={formData.name} onChange={e => setFormData(f => ({ ...f, name: e.target.value }))}
+                placeholder={formData.parent_id ? 'Ex: Supermercado, iFood...' : 'Ex: Alimentação, Transporte...'}
+                required style={{ width: '100%', padding: '9px 12px', fontSize: 15, borderRadius: 8, border: '1px solid var(--border)' }} />
+            </div>
+
+            {/* Ícone */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Ícone</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {iconOptions.map(icon => (
+                  <button key={icon} type="button" onClick={() => setFormData(f => ({ ...f, icon }))}
+                    style={{ fontSize: 22, padding: 7, border: formData.icon === icon ? '2px solid #3498db' : '1px solid var(--border)', borderRadius: 8, backgroundColor: formData.icon === icon ? '#e3f2fd' : 'var(--surface)', cursor: 'pointer' }}>
+                    {icon}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Cor */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Cor</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {colorOptions.map(color => (
+                  <button key={color} type="button" onClick={() => setFormData(f => ({ ...f, color }))}
+                    style={{ width: 36, height: 36, backgroundColor: color, border: formData.color === color ? '3px solid var(--text)' : '2px solid transparent', borderRadius: 8, cursor: 'pointer' }} />
+                ))}
+              </div>
+            </div>
+
+            {/* Preview */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', backgroundColor: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: formData.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+                {formData.icon}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, color: 'var(--text)', fontSize: 15 }}>
+                  {formData.name || 'Nome da categoria'}
+                </div>
+                {formData.parent_id && (
+                  <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                    ↳ {parentOptions.find(p => p.id === formData.parent_id)?.name || ''}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit"
+                style={{ flex: 1, padding: '11px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 15 }}>
+                {editingId ? '💾 Salvar' : '➕ Criar'}
+              </button>
+              <button type="button" onClick={resetForm}
+                style={{ flex: 1, padding: '11px', backgroundColor: 'var(--border)', color: 'var(--text2)', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Lista em árvore */}
+        {categories.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🏷️</div>
+            <p>Nenhuma categoria ainda.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {categories.map(cat => {
+              const hasChildren = (cat.subcategories?.length || 0) > 0;
+              const isExpanded = expandedIds.has(cat.id);
+
+              return (
+                <div key={cat.id}>
+                  {/* Categoria principal */}
+                  <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: 'var(--shadow)' }}>
+                    <div style={{ width: 46, height: 46, borderRadius: 10, backgroundColor: cat.color || '#3498db', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
+                      {cat.icon || '📁'}
                     </div>
-                    <div style={{ textAlign: 'right', minWidth: 80 }}>
-                      <div style={{ fontWeight: 'bold', color: '#e74c3c', fontSize: 16 }}>
-                        +R$ {interest.toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: 12, color: '#e74c3c' }}>+{interestPct}%</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{cat.name}</div>
+                      {hasChildren && (
+                        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                          {cat.subcategories!.length} subcategoria{cat.subcategories!.length > 1 ? 's' : ''}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {hasChildren && (
+                        <button onClick={() => toggleExpand(cat.id)}
+                          style={{ padding: '6px 10px', backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 14, color: 'var(--text3)' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </button>
+                      )}
+                      <button onClick={() => { setFormData(f => ({ ...f, parent_id: cat.id })); setShowForm(true); }}
+                        style={{ padding: '6px 10px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}
+                        title="Adicionar subcategoria">
+                        +↳
+                      </button>
+                      <button onClick={() => startEdit(cat)}
+                        style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        ✏️
+                      </button>
+                      <button onClick={() => handleDelete(cat.id, cat.name, hasChildren)}
+                        style={{ padding: '6px 10px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        🗑️
+                      </button>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
 
-        {/* Insights */}
-        <div style={{ backgroundColor: '#fff3cd', border: '2px solid #ffc107', borderRadius: 12, padding: 20, marginBottom: 32 }}>
-          <h2 style={{ marginTop: 0, marginBottom: 16 }}>💡 Insights Inteligentes</h2>
-          <div style={{ display: 'grid', gap: 12 }}>
-            {insights.map((insight, i) => (
-              <div key={i} style={{ backgroundColor: 'white', padding: 12, borderRadius: 8, fontSize: 15, border: '1px solid #f39c12' }}>
-                {insight}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {categoryData.length > 0 && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 24, marginBottom: 32 }}>
-              <div style={{ backgroundColor: 'white', padding: 24, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-                <h3 style={{ marginTop: 0, marginBottom: 16 }}>🥧 Gastos por Categoria</h3>
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie data={categoryData} cx="50%" cy="50%" labelLine={false} label={renderCustomizedLabel} outerRadius={100} fill="#8884d8" dataKey="value">
-                      {categoryData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
+                  {/* Subcategorias */}
+                  {hasChildren && isExpanded && (
+                    <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {cat.subcategories!.map(sub => (
+                        <div key={sub.id} style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, borderLeft: `3px solid ${cat.color || '#3498db'}` }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: -4 }}>↳</div>
+                          <div style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: sub.color || cat.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0, opacity: 0.9 }}>
+                            {sub.icon || cat.icon}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>{sub.name}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={() => startEdit(sub)}
+                              style={{ padding: '4px 8px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              ✏️
+                            </button>
+                            <button onClick={() => handleDelete(sub.id, sub.name, false)}
+                              style={{ padding: '4px 8px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
                       ))}
-                    </Pie>
-                    <Tooltip formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : 'R$ 0.00'} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div style={{ marginTop: 16 }}>
-                  {categoryData.map((cat, i) => (
-                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 14 }}>
-                      <div style={{ width: 16, height: 16, backgroundColor: cat.color, borderRadius: 4 }} />
-                      <span>{cat.icon} {cat.name}</span>
-                      <span style={{ marginLeft: 'auto', fontWeight: 'bold' }}>R$ {cat.value.toFixed(2)}</span>
                     </div>
-                  ))}
+                  )}
                 </div>
-              </div>
-
-              {monthlyData.length > 0 && (
-                <div style={{ backgroundColor: 'white', padding: 24, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-                  <h3 style={{ marginTop: 0, marginBottom: 16 }}>📈 Evolução Mensal</h3>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart data={monthlyData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="month" />
-                      <YAxis />
-                      <Tooltip formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : 'R$ 0.00'} />
-                      <Line type="monotone" dataKey="amount" stroke="#8884d8" strokeWidth={3} dot={{ r: 6, fill: '#8884d8' }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </div>
-
-            <div style={{ backgroundColor: 'white', padding: 24, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', marginBottom: 24 }}>
-              <h3 style={{ marginTop: 0, marginBottom: 16 }}>🏆 Ranking de Categorias</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={categoryData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" />
-                  <YAxis />
-                  <Tooltip formatter={(value: number | undefined) => value != null ? `R$ ${value.toFixed(2)}` : 'R$ 0.00'} />
-                  <Bar dataKey="value" radius={[8, 8, 0, 0]}>
-                    {categoryData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </>
+              );
+            })}
+          </div>
         )}
-
-        <div style={{ textAlign: 'center' }}>
-          <Link href="/dashboard">
-            <button style={{ padding: '12px 24px', fontSize: 16 }}>⬅️ Voltar ao Dashboard</button>
-          </Link>
-        </div>
       </main>
     </>
   );
