@@ -42,8 +42,9 @@ export default function CategoriesPage() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
     const { data: memberData, error } = await supabase
-      .from('household_members').select('household_id').eq('user_id', user.id).single();
-    if (error || !memberData) { router.push('/setup'); return; }
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+    const memberData = members?.[0] ?? null;
+    if (!memberData) { router.push('/setup'); return; }
     setHouseholdId(memberData.household_id);
     loadCategories(memberData.household_id);
   }
@@ -74,8 +75,9 @@ export default function CategoriesPage() {
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
-    const { data: member } = await supabase
-      .from('household_members').select('household_id').eq('user_id', user.id).single();
+    const { data: members } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+      const member = members?.[0] ?? null;
     if (!member) return;
     const hid = member.household_id;
 
