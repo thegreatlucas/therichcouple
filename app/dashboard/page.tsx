@@ -7,6 +7,9 @@ import Link from 'next/link';
 import Header from '@/app/components/Header';
 import { useCrypto } from '@/lib/cryptoContext';
 import { usePinUnlock } from '@/lib/usePinUnlock';
+import { useFinanceGroup } from '@/lib/financeGroupContext';
+import { Button } from '@/app/components/ui/Button';
+import { Card } from '@/app/components/ui/Card';
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
@@ -39,6 +42,7 @@ export default function Dashboard() {
   const router = useRouter();
   const { householdKey } = useCrypto();
   const { unlockWithPin } = usePinUnlock();
+  const { activeGroupId, activeGroup, loading: groupLoading } = useFinanceGroup();
 
   const now = new Date();
   const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
@@ -48,33 +52,28 @@ export default function Dashboard() {
   const in7days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   useEffect(() => {
-    init();
-  }, []);
+    if (groupLoading) return;
+    if (!activeGroupId) {
+      router.push('/setup');
+      return;
+    }
+    init(activeGroupId);
+  }, [groupLoading, activeGroupId]);
 
-  async function init() {
+  async function init(groupId: string) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
     setUserEmail(user.email || '');
     setUserName(user.user_metadata?.name || user.email?.split('@')[0] || '');
     setCurrentUserId(user.id);
 
-    const { data: member } = await supabase
-      .from('household_members')
-      .select('household_id, households(name, encrypted_key)')
-      .eq('user_id', user.id)
-      .single();
-
-    if (!member) { router.push('/setup'); return; }
-
-    const hid = member.household_id;
+    const hid = groupId;
     setHouseholdId(hid);
-    setHouseholdName((member.households as any)?.name || '');
+    setHouseholdName(activeGroup?.name || '');
 
-    // Verifica se o household tem criptografia configurada
-    const hasCrypto = !!(member.households as any)?.encrypted_key;
+    const hasCrypto = !!activeGroup?.hasCrypto;
     setHouseholdHasCrypto(hasCrypto);
 
-    // Se tem cripto e a chave ainda não está em memória, pede o PIN
     if (hasCrypto && !householdKey) {
       setShowPinModal(true);
     }
@@ -265,15 +264,17 @@ export default function Dashboard() {
 
   const balance_display = totalIncome > 0 ? totalIncome - totalExpenses : null;
 
-  if (loading) return (
-    <main style={{ padding: 24, maxWidth: 700, margin: '0 auto' }}>
-      <p style={{ color: '#666' }}>⏳ Carregando seu dashboard...</p>
-    </main>
-  );
+  if (loading) {
+    return (
+      <main className="mx-auto max-w-4xl px-4 py-6">
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">⏳ Carregando seu dashboard...</p>
+      </main>
+    );
+  }
 
   return (
     <>
-      <Header title="💑 Finanças do Casal" action={{ label: '⚙️', href: '/setup' }} />
+      <Header title="💑 Finanças do grupo" action={{ label: '⚙️', href: '/setup' }} />
 
       {/* PIN Modal */}
       {showPinModal && (
@@ -343,77 +344,84 @@ export default function Dashboard() {
         </div>
       )}
 
-      <main style={{ padding: 16, maxWidth: 700, margin: '0 auto', paddingBottom: 48 }}>
+      <main className="mx-auto flex max-w-4xl flex-col gap-6 px-4 pb-12 pt-6">
 
         {/* Header */}
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: 22 }}>
-                Olá{userName ? `, ${userName}` : ''}! 👋
-              </h1>
-              <p style={{ margin: '4px 0 0', color: '#666', fontSize: 14 }}>
-                {householdName && `🏠 ${householdName} · `}{monthLabel}
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              {/* Ícone de cadeado: verde se desbloqueado, cinza se não */}
-              {householdHasCrypto && (
-                <button
-                  onClick={() => { if (!householdKey) setShowPinModal(true); }}
-                  title={householdKey ? 'Dados descriptografados' : 'Clique para inserir o PIN'}
-                  style={{
-                    background: 'none', border: 'none', cursor: householdKey ? 'default' : 'pointer',
-                    fontSize: 20, padding: 4,
-                  }}
-                >
-                  {householdKey ? '🔓' : '🔒'}
-                </button>
-              )}
-              <Link href="/transactions/new">
-                <button style={{
-                  padding: '10px 18px', backgroundColor: '#2ecc71', color: 'white',
-                  border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 'bold', fontSize: 14
-                }}>
-                  ➕ Lançar
-                </button>
-              </Link>
-            </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+              Olá{userName ? `, ${userName}` : ''}! 👋
+            </h1>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              {householdName && `🏠 ${householdName} · `}{monthLabel}
+            </p>
           </div>
-
-          {!hasPartner && (
-            <div style={{ marginTop: 14, padding: '10px 14px', backgroundColor: '#fff3cd', border: '1px solid #ffc107', borderRadius: 8, fontSize: 13 }}>
-              👫 Seu parceiro(a) ainda não entrou.{' '}
-              <Link href="/setup" style={{ color: '#856404', fontWeight: 'bold' }}>Compartilhar código de convite →</Link>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {householdHasCrypto && (
+              <button
+                onClick={() => { if (!householdKey) setShowPinModal(true); }}
+                title={householdKey ? 'Dados descriptografados' : 'Clique para inserir o PIN'}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-zinc-200 text-lg hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              >
+                {householdKey ? '🔓' : '🔒'}
+              </button>
+            )}
+            <Link href="/transactions/new">
+              <Button variant="primary" size="md">
+                ➕ Lançar
+              </Button>
+            </Link>
+          </div>
         </div>
 
-        {/* Cards financeiros — layout compacto, uma linha por item */}
-        <div style={{ border: '1px solid #eee', borderRadius: 12, marginBottom: 16, overflow: 'hidden' }}>
-          {/* Renda */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', backgroundColor: '#f0fff4', borderBottom: '1px solid #d4edda' }}>
-            <span style={{ fontSize: 13, color: '#555' }}>💵 Renda</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontWeight: 'bold', color: '#27ae60', fontSize: 15 }}>R$ {totalIncome.toFixed(2)}</span>
-              {totalIncome === 0 && <Link href="/incomes" style={{ fontSize: 11, color: '#27ae60' }}>+ Cadastrar</Link>}
-            </div>
-          </div>
-          {/* Gastos */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', backgroundColor: '#fff8f8', borderBottom: '1px solid #fde8e8' }}>
-            <span style={{ fontSize: 13, color: '#555' }}>💳 Gastos</span>
-            <div style={{ textAlign: 'right' }}>
-              <span style={{ fontWeight: 'bold', color: '#e74c3c', fontSize: 15 }}>R$ {totalExpenses.toFixed(2)}</span>
-              {sharedExpenses > 0 && <div style={{ fontSize: 11, color: '#999' }}>👫 R$ {sharedExpenses.toFixed(2)} compartilhado</div>}
-            </div>
-          </div>
-          {/* Saldo */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', backgroundColor: balance_display === null ? '#fafafa' : balance_display >= 0 ? '#f0fff4' : '#fff8f8' }}>
-            <span style={{ fontSize: 13, color: '#555' }}>📊 Saldo</span>
-            <span style={{ fontWeight: 'bold', fontSize: 15, color: balance_display === null ? '#999' : balance_display >= 0 ? '#27ae60' : '#e74c3c' }}>
+        {!hasPartner && (
+          <Card className="flex items-center justify-between border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40">
+            <span>🧑‍🤝‍🧑 Seu parceiro(a) ainda não entrou neste grupo.</span>
+            <Link href="/setup" className="text-xs font-semibold text-amber-900 underline underline-offset-4 dark:text-amber-200">
+              Compartilhar código →
+            </Link>
+          </Card>
+        )}
+
+        {/* Cards financeiros */}
+        <div className="grid gap-3 md:grid-cols-3">
+          <Card className="flex flex-col gap-2 px-4 py-3">
+            <span className="text-xs font-medium uppercase tracking-wide text-emerald-600">Renda</span>
+            <span className="text-lg font-semibold text-emerald-600">
+              R$ {totalIncome.toFixed(2)}
+            </span>
+            {totalIncome === 0 && (
+              <Link href="/incomes" className="mt-1 text-xs font-medium text-emerald-700 underline underline-offset-4">
+                + Cadastrar
+              </Link>
+            )}
+          </Card>
+          <Card className="flex flex-col gap-2 px-4 py-3">
+            <span className="text-xs font-medium uppercase tracking-wide text-rose-600">Gastos</span>
+            <span className="text-lg font-semibold text-rose-600">
+              R$ {totalExpenses.toFixed(2)}
+            </span>
+            {sharedExpenses > 0 && (
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                👥 R$ {sharedExpenses.toFixed(2)} compartilhado
+              </span>
+            )}
+          </Card>
+          <Card className="flex flex-col gap-2 px-4 py-3">
+            <span className="text-xs font-medium uppercase tracking-wide text-zinc-600 dark:text-zinc-300">Saldo</span>
+            <span
+              className={[
+                'text-lg font-semibold',
+                balance_display === null
+                  ? 'text-zinc-400'
+                  : balance_display >= 0
+                    ? 'text-emerald-600'
+                    : 'text-rose-600',
+              ].join(' ')}
+            >
               {balance_display === null ? '— Cadastre sua renda' : `R$ ${balance_display.toFixed(2)}`}
             </span>
-          </div>
+          </Card>
         </div>
 
         {/* Orçamento do mês */}

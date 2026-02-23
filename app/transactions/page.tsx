@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Header from '@/app/components/Header';
 import { applyBalanceDelta } from '@/lib/balance';
+import { useFinanceGroup } from '@/lib/financeGroupContext';
 
 export default function TransactionsPage() {
   const [user, setUser] = useState<any>(null);
@@ -19,27 +20,34 @@ export default function TransactionsPage() {
   const [editForm, setEditForm] = useState({ description: '', amount: '', date: '', category_id: '', split: '' });
   const [saving, setSaving] = useState(false);
   const router = useRouter();
+  const { activeGroupId } = useFinanceGroup();
 
   useEffect(() => {
     async function init() {
       const { data: { user } } = await supabase.auth.getUser();
       setUser(user);
       if (!user) { router.push('/login'); return; }
-      const { data: members } = await supabase.from('household_members').select('household_id').eq('user_id', user.id).single();
-      if (!members) { router.push('/setup'); return; }
-      setHouseholdId(members.household_id);
-      const { data: cats } = await supabase.from('categories').select('*').eq('household_id', members.household_id).order('name');
+
+      const hid = activeGroupId;
+      if (!hid) { router.push('/setup'); return; }
+
+      setHouseholdId(hid);
+      const { data: cats } = await supabase.from('categories').select('*').eq('household_id', hid).order('name');
       setCategories(cats || []);
       setLoading(false);
     }
     init();
-  }, [router]);
+  }, [router, activeGroupId]);
 
   useEffect(() => { if (householdId) loadTransactions(); }, [householdId, filterPeriod, filterCategory]);
 
   async function loadTransactions() {
     if (!householdId) return;
-    let query = supabase.from('transactions').select('*, categories(name, icon, color), accounts(name)').eq('household_id', householdId).order('date', { ascending: false });
+    let query = supabase
+      .from('transactions')
+      .select('*, categories(name, icon, color), accounts(name), transaction_shares(user_id, share_amount)')
+      .eq('household_id', householdId)
+      .order('date', { ascending: false });
     if (filterPeriod === 'month') {
       const now = new Date();
       query = query.gte('date', new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]);
@@ -73,24 +81,40 @@ export default function TransactionsPage() {
     const newTotal = isParcelado ? newAmt * editingTx.installments_count : newAmt;
     const oldTotal = Number(editingTx.amount);
     const amountChanged = Math.abs(newTotal - oldTotal) > 0.001;
-    const splitChanged = editForm.split !== editingTx.split;
 
-    // Reverte balance antigo se era shared
-    if (editingTx.split === 'shared' && (amountChanged || splitChanged)) {
-      const { data: members } = await supabase.from('household_members').select('user_id').eq('household_id', householdId);
-      const otherId = (members || []).map((m: any) => m.user_id).find((id: string) => id !== user.id);
-      if (otherId) {
-        const wasPayer = editingTx.payer_id === user.id;
-        await applyBalanceDelta(householdId, user.id, otherId, wasPayer ? -(oldTotal / 2) : (oldTotal / 2));
-      }
-    }
-    // Aplica novo balance se é shared
-    if (editForm.split === 'shared' && (amountChanged || splitChanged)) {
-      const { data: members } = await supabase.from('household_members').select('user_id').eq('household_id', householdId);
-      const otherId = (members || []).map((m: any) => m.user_id).find((id: string) => id !== user.id);
-      if (otherId) {
-        const wasPayer = editingTx.payer_id === user.id;
-        await applyBalanceDelta(householdId, user.id, otherId, wasPayer ? (newTotal / 2) : -(newTotal / 2));
+    if (editingTx.split === 'shared' && amountChanged) {
+      const { data: shareRows } = await supabase
+        .from('transaction_shares')
+        .select('id, user_id, share_amount')
+        .eq('transaction_id', editingTx.id);
+
+      if (shareRows && shareRows.length > 0) {
+        const factor = oldTotal !== 0 ? newTotal / oldTotal : 1;
+        for (const row of shareRows) {
+          const oldShare = Number(row.share_amount);
+          const newShare = Number((oldShare * factor).toFixed(2));
+          if (Math.abs(newShare - oldShare) < 0.001) continue;
+
+          if (row.user_id !== editingTx.payer_id) {
+            const delta = newShare - oldShare;
+            await applyBalanceDelta(householdId, editingTx.payer_id, row.user_id, delta);
+          }
+
+          await supabase
+            .from('transaction_shares')
+            .update({ share_amount: newShare })
+            .eq('id', row.id);
+        }
+      } else {
+        const { data: members } = await supabase
+          .from('household_members')
+          .select('user_id')
+          .eq('household_id', householdId);
+        const otherId = (members || []).map((m: any) => m.user_id).find((id: string) => id !== user.id);
+        if (otherId) {
+          const wasPayer = editingTx.payer_id === user.id;
+          await applyBalanceDelta(householdId, user.id, otherId, wasPayer ? (newTotal - oldTotal) / 2 : -(newTotal - oldTotal) / 2);
+        }
       }
     }
 
@@ -113,13 +137,27 @@ export default function TransactionsPage() {
   async function deleteTransaction(tx: any) {
     if (!confirm(`Deletar "${tx.description}"?`)) return;
 
-    // Desfaz balanço compartilhado
     if (tx.split === 'shared') {
-      const { data: members } = await supabase.from('household_members').select('user_id').eq('household_id', householdId!);
-      const otherId = (members || []).map((m: any) => m.user_id).find((id: string) => id !== user.id);
-      if (otherId) {
-        const wasPayer = tx.payer_id === user.id;
-        await applyBalanceDelta(householdId!, user.id, otherId, wasPayer ? -(Number(tx.amount) / 2) : (Number(tx.amount) / 2));
+      const { data: shareRows } = await supabase
+        .from('transaction_shares')
+        .select('user_id, share_amount')
+        .eq('transaction_id', tx.id);
+
+      if (shareRows && shareRows.length > 0) {
+        for (const row of shareRows) {
+          if (row.user_id === tx.payer_id) continue;
+          await applyBalanceDelta(householdId!, tx.payer_id, row.user_id, -Number(row.share_amount));
+        }
+      } else {
+        const { data: members } = await supabase
+          .from('household_members')
+          .select('user_id')
+          .eq('household_id', householdId!);
+        const otherId = (members || []).map((m: any) => m.user_id).find((id: string) => id !== user.id);
+        if (otherId) {
+          const wasPayer = tx.payer_id === user.id;
+          await applyBalanceDelta(householdId!, user.id, otherId, wasPayer ? -(Number(tx.amount) / 2) : (Number(tx.amount) / 2));
+        }
       }
     }
 
@@ -194,6 +232,9 @@ export default function TransactionsPage() {
           <div style={{ textAlign: 'center', padding: 32, color: '#666' }}><div style={{ fontSize: 48 }}>📭</div><p>Nenhum gasto encontrado.</p></div>
         ) : transactions.map(tx => {
           const display = tx.installments_count > 1 && tx.installment_value ? Number(tx.installment_value) : Number(tx.amount);
+          const myShare = Array.isArray(tx.transaction_shares)
+            ? Number(tx.transaction_shares.find((s: any) => s.user_id === user?.id)?.share_amount ?? display)
+            : display;
           return (
             <div key={tx.id} style={{ border: tx.split === 'shared' ? '1px solid #c5cae9' : '1px solid #ddd', padding: 12, marginBottom: 8, borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: tx.split === 'shared' ? '#fafcff' : 'white' }}>
               <div style={{ flex: 1 }}>
@@ -208,7 +249,11 @@ export default function TransactionsPage() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: 18, fontWeight: 'bold', color: '#e74c3c' }}>R$ {display.toFixed(2)}</div>
-                  {tx.split === 'shared' && <div style={{ fontSize: 12, color: '#9b59b6' }}>Sua parte: R$ {(display / 2).toFixed(2)}</div>}
+                  {tx.split === 'shared' && (
+                    <div style={{ fontSize: 12, color: '#9b59b6' }}>
+                      Sua parte: R$ {myShare.toFixed(2)}
+                    </div>
+                  )}
                 </div>
                 <button onClick={() => router.push(`/transactions/${tx.id}`)} style={{ padding: '6px 10px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }} title="Comentários">💬</button>
                 <button onClick={() => openEdit(tx)} style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}>✏️</button>

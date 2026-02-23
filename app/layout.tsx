@@ -4,6 +4,7 @@ import { Inter } from 'next/font/google';
 import { CryptoProvider } from '@/lib/cryptoContext';
 import { ThemeProvider } from '@/lib/themeContext';
 import { ToastProvider } from '@/app/components/Toast';
+import { FinanceGroupProvider } from '@/lib/financeGroupContext';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -43,8 +44,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={inter.className}>
         <ThemeProvider>
           <CryptoProvider>
-            <ToastProvider />
-            {children}
+            <FinanceGroupProvider>
+              <ToastProvider />
+              {children}
+            </FinanceGroupProvider>
           </CryptoProvider>
         </ThemeProvider>
       </body>

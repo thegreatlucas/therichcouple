@@ -7,6 +7,7 @@ import Link from 'next/link';
 import Header from '@/app/components/Header';
 import { generateHouseholdKey, encryptHouseholdKey } from '@/lib/crypto';
 import { useCrypto } from '@/lib/cryptoContext';
+import { useFinanceGroup } from '@/lib/financeGroupContext';
 
 type View = 'loading' | 'settings' | 'choose' | 'create' | 'join';
 
@@ -34,8 +35,11 @@ export default function SetupPage() {
 
   const router = useRouter();
   const { setHouseholdKey } = useCrypto();
+  const { groups, activeGroup, activeGroupId } = useFinanceGroup();
 
-  useEffect(() => { init(); }, []);
+  useEffect(() => {
+    init();
+  }, [activeGroupId, activeGroup, groups.length]);
 
   async function init() {
     const { data: { user } } = await supabase.auth.getUser();
@@ -43,20 +47,13 @@ export default function SetupPage() {
 
     setUserName(user.user_metadata?.name || '');
 
-    const { data: member } = await supabase
-      .from('household_members')
-      .select('household_id, households(id, name, invite_code, ship_name, close_mode, close_day)')
-      .eq('user_id', user.id)
-      .single();
-
-    if (member?.households) {
-      const hh = member.households as any;
-      setHousehold(hh);
-      setHouseholdId(member.household_id);
-      setHouseholdName(hh.name || '');
-      setShipName(hh.ship_name || '');
-      setCloseMode(hh.close_mode || 'manual');
-      setCloseDay(hh.close_day ? String(hh.close_day) : '');
+    if (activeGroup && activeGroupId) {
+      setHousehold(activeGroup);
+      setHouseholdId(activeGroupId);
+      setHouseholdName(activeGroup.name || '');
+      setShipName(activeGroup.shipName || '');
+      setCloseMode(activeGroup.closeMode || 'manual');
+      setCloseDay(activeGroup.closeDay ? String(activeGroup.closeDay) : '');
       setView('settings');
     } else {
       setView('choose');

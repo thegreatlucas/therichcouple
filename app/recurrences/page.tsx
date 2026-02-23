@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import Header from '@/app/components/Header';
 import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 import { applyBalanceDelta } from '@/lib/balance';
+import { useFinanceGroup } from '@/lib/financeGroupContext';
 
 type RecurrenceType = 'fixed' | 'variable';
 
@@ -40,31 +41,26 @@ export default function RecurrencesPage() {
   const [variableAmounts, setVariableAmounts] = useState<Record<string, string>>({});
   const router = useRouter();
   const { encryptRecord } = useEncryptedInsert();
+  const { activeGroupId } = useFinanceGroup();
 
   useEffect(() => {
     async function init() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { router.push('/login'); return; }
       setUserId(user.id);
-
-      const { data: member } = await supabase
-        .from('household_members')
-        .select('household_id')
-        .eq('user_id', user.id)
-        .single();
-
-      if (!member) { router.push('/setup'); return; }
-      setHouseholdId(member.household_id);
+      const hid = activeGroupId;
+      if (!hid) { router.push('/setup'); return; }
+      setHouseholdId(hid);
 
       await Promise.all([
-        loadRecurrences(member.household_id),
-        loadCards(member.household_id),
-        loadAccounts(member.household_id),
+        loadRecurrences(hid),
+        loadCards(hid),
+        loadAccounts(hid),
       ]);
       setLoading(false);
     }
     init();
-  }, []);
+  }, [activeGroupId]);
 
   async function loadRecurrences(hid: string) {
     const { data } = await supabase
@@ -110,13 +106,39 @@ export default function RecurrencesPage() {
     }
   }
 
-  // Busca o outro membro do household
-  async function getOtherUserId(hid: string, uid: string): Promise<string | null> {
+  async function createSharesForHousehold(hid: string, payerId: string, txId: string, total: number) {
     const { data: members } = await supabase
       .from('household_members')
       .select('user_id')
       .eq('household_id', hid);
-    return (members || []).find((m: any) => m.user_id !== uid)?.user_id ?? null;
+    const allMembers = (members || []).map((m: any) => m.user_id as string);
+    if (!allMembers.length) return;
+
+    const participants = allMembers;
+    const count = participants.length;
+    const base = Math.floor((total * 100) / count) / 100;
+    let accumulated = 0;
+
+    const rows = participants.map((uid, index) => {
+      let amount = base;
+      if (index === participants.length - 1) {
+        amount = Number((total - accumulated).toFixed(2));
+      }
+      accumulated += amount;
+      return {
+        transaction_id: txId,
+        user_id: uid,
+        share_amount: amount,
+        share_percent: Number((100 / count).toFixed(2)),
+      };
+    });
+
+    await supabase.from('transaction_shares').insert(rows);
+
+    for (const r of rows) {
+      if (r.user_id === payerId) continue;
+      await applyBalanceDelta(hid, payerId, r.user_id, r.share_amount);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -186,7 +208,11 @@ export default function RecurrencesPage() {
     };
 
     const txPayload = await encryptRecord(txBase);
-    const { error } = await supabase.from('transactions').insert(txPayload);
+    const { data: newTx, error } = await supabase
+      .from('transactions')
+      .insert(txPayload)
+      .select()
+      .single();
 
     if (error) { alert('Erro: ' + error.message); return; }
 
@@ -195,12 +221,8 @@ export default function RecurrencesPage() {
       await upsertInvoice(r.credit_card_id, invoiceMonth, r.amount);
     }
 
-    // CORRIGIDO: só atualiza balance se split for 'shared'
-    if (txSplit === 'shared') {
-      const otherUserId = await getOtherUserId(householdId, userId);
-      if (otherUserId) {
-        await applyBalanceDelta(householdId, userId, otherUserId, Number(r.amount) / 2);
-      }
+    if (txSplit === 'shared' && newTx) {
+      await createSharesForHousehold(householdId, userId, newTx.id, Number(r.amount));
     }
 
     alert(`✅ "${r.name}" marcado como pago!`);
@@ -235,19 +257,19 @@ export default function RecurrencesPage() {
     };
 
     const txPayload = await encryptRecord(txBase);
-    await supabase.from('transactions').insert(txPayload);
+    const { data: newTx } = await supabase
+      .from('transactions')
+      .insert(txPayload)
+      .select()
+      .single();
 
     if (rule?.payment_method === 'credit_card' && rule?.credit_card_id && rule?.credit_cards?.closing_day) {
       const invoiceMonth = calculateInvoiceMonth(today, rule.credit_cards.closing_day);
       await upsertInvoice(rule.credit_card_id, invoiceMonth, amount);
     }
 
-    // CORRIGIDO: balance só se shared
-    if (txSplit === 'shared' && householdId && userId) {
-      const otherUserId = await getOtherUserId(householdId, userId);
-      if (otherUserId) {
-        await applyBalanceDelta(householdId, userId, otherUserId, amount / 2);
-      }
+    if (txSplit === 'shared' && householdId && userId && newTx) {
+      await createSharesForHousehold(householdId, userId, newTx.id, amount);
     }
 
     setVariableAmounts(prev => ({ ...prev, [id]: '' }));

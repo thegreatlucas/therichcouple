@@ -10,6 +10,56 @@ serve(async (req) => {
 
   const today = new Date().toISOString().split('T')[0];
 
+  async function applyBalanceDelta(
+    householdId: string,
+    currentUserId: string,
+    otherUserId: string,
+    delta: number,
+  ) {
+    if (Math.abs(delta) < 0.001) return;
+
+    const { data: rowA } = await supabase
+      .from('balances')
+      .select('*')
+      .eq('household_id', householdId)
+      .eq('from_user_id', otherUserId)
+      .eq('to_user_id', currentUserId)
+      .maybeSingle();
+
+    const { data: rowB } = await supabase
+      .from('balances')
+      .select('*')
+      .eq('household_id', householdId)
+      .eq('from_user_id', currentUserId)
+      .eq('to_user_id', otherUserId)
+      .maybeSingle();
+
+    const currentNet =
+      (rowA ? Number(rowA.amount) : 0) - (rowB ? Number(rowB.amount) : 0);
+    const newNet = currentNet + delta;
+
+    if (rowA) await supabase.from('balances').delete().eq('id', rowA.id);
+    if (rowB) await supabase.from('balances').delete().eq('id', rowB.id);
+
+    if (Math.abs(newNet) < 0.001) return;
+
+    if (newNet > 0) {
+      await supabase.from('balances').insert({
+        household_id: householdId,
+        from_user_id: otherUserId,
+        to_user_id: currentUserId,
+        amount: newNet,
+      });
+    } else {
+      await supabase.from('balances').insert({
+        household_id: householdId,
+        from_user_id: currentUserId,
+        to_user_id: otherUserId,
+        amount: Math.abs(newNet),
+      });
+    }
+  }
+
   try {
     // Busca todas as regras ativas com next_date <= hoje
     const { data: rules, error: rulesError } = await supabase
@@ -52,80 +102,72 @@ serve(async (req) => {
       }
 
       // 1. Cria a nova transação clonando a base
-      const { error: txError } = await supabase.from('transactions').insert({
-        household_id: baseTx.household_id,
-        user_id: baseTx.user_id,
-        payer_id: baseTx.payer_id,
-        account_id: baseTx.account_id,
-        category_id: baseTx.category_id,
-        amount: baseTx.amount,
-        description: baseTx.description,
-        date: rule.next_date,
-        payment_method: baseTx.payment_method || 'cash',
-        split: baseTx.split || 'individual',
-        is_recurring: true,
-        is_subscription: baseTx.is_subscription || false,
-      });
+      const { data: newTx, error: txError } = await supabase
+        .from('transactions')
+        .insert({
+          household_id: baseTx.household_id,
+          user_id: baseTx.user_id,
+          payer_id: baseTx.payer_id,
+          account_id: baseTx.account_id,
+          category_id: baseTx.category_id,
+          amount: baseTx.amount,
+          description: baseTx.description,
+          date: rule.next_date,
+          payment_method: baseTx.payment_method || 'cash',
+          split: baseTx.split || 'individual',
+          is_recurring: true,
+          is_subscription: baseTx.is_subscription || false,
+        })
+        .select()
+        .single();
 
       if (txError) {
         results.push({ rule_id: rule.id, status: 'error', description: baseTx.description, error: txError.message });
         continue;
       }
 
-      // 2. Se split === 'shared', atualiza o balance entre parceiros
+      // 2. Se split === 'shared', replica transaction_shares (se existirem) e atualiza o balance com base nelas
       if (baseTx.split === 'shared') {
-        const splitAmount = Number(baseTx.amount) / 2;
+        const { data: baseShares } = await supabase
+          .from('transaction_shares')
+          .select('user_id, share_amount, share_percent')
+          .eq('transaction_id', baseTx.id);
 
-        // Busca o outro membro do household
-        const { data: members } = await supabase
-          .from('household_members')
-          .select('user_id')
-          .eq('household_id', baseTx.household_id);
+        if (baseShares && baseShares.length > 0 && newTx) {
+          const sharesToInsert = baseShares.map((s: any) => ({
+            transaction_id: newTx.id,
+            user_id: s.user_id,
+            share_amount: s.share_amount,
+            share_percent: s.share_percent,
+          }));
+          await supabase.from('transaction_shares').insert(sharesToInsert);
 
-        const otherUserId = (members || []).find((m: any) => m.user_id !== baseTx.user_id)?.user_id;
+          for (const s of baseShares) {
+            if (s.user_id === baseTx.payer_id) continue;
+            await applyBalanceDelta(
+              baseTx.household_id,
+              baseTx.payer_id,
+              s.user_id,
+              Number(s.share_amount),
+            );
+          }
+        } else {
+          const splitAmount = Number(baseTx.amount) / 2;
 
-        if (otherUserId) {
-          // Mesma lógica de acumulação do new/page.tsx
-          const { data: balA } = await supabase
-            .from('balances')
-            .select('*')
-            .eq('household_id', baseTx.household_id)
-            .eq('from_user_id', otherUserId)
-            .eq('to_user_id', baseTx.user_id)
-            .maybeSingle();
+          const { data: members } = await supabase
+            .from('household_members')
+            .select('user_id')
+            .eq('household_id', baseTx.household_id);
 
-          const { data: balB } = await supabase
-            .from('balances')
-            .select('*')
-            .eq('household_id', baseTx.household_id)
-            .eq('from_user_id', baseTx.user_id)
-            .eq('to_user_id', otherUserId)
-            .maybeSingle();
+          const otherUserId = (members || []).find((m: any) => m.user_id !== baseTx.user_id)?.user_id;
 
-          if (balA) {
-            await supabase.from('balances').update({ amount: Number(balA.amount) + splitAmount }).eq('id', balA.id);
-          } else if (balB) {
-            const newAmount = Number(balB.amount) - splitAmount;
-            if (newAmount > 0.001) {
-              await supabase.from('balances').update({ amount: newAmount }).eq('id', balB.id);
-            } else if (newAmount < -0.001) {
-              await supabase.from('balances').delete().eq('id', balB.id);
-              await supabase.from('balances').insert({
-                household_id: baseTx.household_id,
-                from_user_id: otherUserId,
-                to_user_id: baseTx.user_id,
-                amount: Math.abs(newAmount),
-              });
-            } else {
-              await supabase.from('balances').delete().eq('id', balB.id);
-            }
-          } else {
-            await supabase.from('balances').insert({
-              household_id: baseTx.household_id,
-              from_user_id: otherUserId,
-              to_user_id: baseTx.user_id,
-              amount: splitAmount,
-            });
+          if (otherUserId) {
+            await applyBalanceDelta(
+              baseTx.household_id,
+              baseTx.payer_id,
+              otherUserId,
+              splitAmount,
+            );
           }
         }
       }

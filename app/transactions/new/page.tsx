@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 import { applyBalanceDelta } from '@/lib/balance';
+import { useFinanceGroup } from '@/lib/financeGroupContext';
+import type { TransactionShare } from '@/lib/types/finance';
 
 export default function NewTransaction() {
   const [user, setUser] = useState<any>(null);
@@ -33,26 +35,27 @@ export default function NewTransaction() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { encryptRecord } = useEncryptedInsert();
+  const { activeGroupId } = useFinanceGroup();
+
+  const [groupMembers, setGroupMembers] = useState<{ id: string; name: string }[]>([]);
+  const [shares, setShares] = useState<Record<string, { enabled: boolean }>>({});
 
   useEffect(() => {
     async function loadData() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { router.push('/login'); return; }
       setUser(user);
+      const householdId = activeGroupId;
+      if (!householdId) { router.push('/setup'); return; }
 
-      const { data: memberData } = await supabase
-        .from('household_members')
-        .select('households(id, name)')
-        .eq('user_id', user.id);
-
-      const householdId = (memberData?.[0]?.households as any)?.id;
-      if (householdId) {
-        setSelectedHousehold(householdId);
-        await loadHouseholdData(householdId);
-      }
+      setSelectedHousehold(householdId);
+      await Promise.all([
+        loadHouseholdData(householdId),
+        loadGroupMembers(householdId, user.id),
+      ]);
     }
     loadData();
-  }, [router]);
+  }, [router, activeGroupId]);
 
   useEffect(() => {
     if (paymentMethod !== 'credit' || !creditCardId || !date) return;
@@ -73,6 +76,25 @@ export default function NewTransaction() {
     setAccountId(accRes.data?.[0]?.id || '');
     setCreditCardId(cardRes.data?.[0]?.id || '');
     setCategoryId('');
+  }
+
+  async function loadGroupMembers(householdId: string, currentUserId: string) {
+    const { data } = await supabase
+      .from('household_members')
+      .select('user_id, profiles(name)')
+      .eq('household_id', householdId);
+
+    const mapped = (data || []).map((row: any) => ({
+      id: row.user_id as string,
+      name: row.profiles?.name || (row.user_id === currentUserId ? 'Você' : 'Membro'),
+    }));
+
+    setGroupMembers(mapped);
+    const initialShares: Record<string, { enabled: boolean }> = {};
+    for (const m of mapped) {
+      initialShares[m.id] = { enabled: true };
+    }
+    setShares(initialShares);
   }
 
   function calculateInvoiceMonth(purchaseDate: string, closingDay: number): string {
@@ -105,6 +127,11 @@ export default function NewTransaction() {
   const finalAmount = isParcelado && hasInterest && totalWithInterest > 0
     ? totalWithInterest : originalAmount;
 
+  const enabledSharedMembers = splitType === 'shared' && groupMembers.length
+    ? groupMembers.filter((m) => shares[m.id]?.enabled !== false)
+    : [];
+  const sharedParticipantsCount = enabledSharedMembers.length || 1;
+
   function clearForm() {
     setAmount(''); setDescription(''); setCategoryId('');
     setDate(new Date().toISOString().split('T')[0]);
@@ -116,6 +143,39 @@ export default function NewTransaction() {
     setHasInterest(false); setInstallmentValue('');
   }
 
+  function buildSharesForTransaction(total: number, payerId: string, txId: string): TransactionShare[] {
+    if (splitType !== 'shared' || !groupMembers.length) {
+      return [{
+        transactionId: txId,
+        userId: payerId,
+        shareAmount: total,
+        sharePercent: 100,
+      }];
+    }
+
+    const participants = enabledSharedMembers.length ? enabledSharedMembers : groupMembers;
+    const count = participants.length || 1;
+    const base = Math.floor((total * 100) / count) / 100;
+    const sharesResult: TransactionShare[] = [];
+    let accumulated = 0;
+
+    participants.forEach((m, index) => {
+      let amount = base;
+      if (index === participants.length - 1) {
+        amount = Number((total - accumulated).toFixed(2));
+      }
+      accumulated += amount;
+      sharesResult.push({
+        transactionId: txId,
+        userId: m.id,
+        shareAmount: amount,
+        sharePercent: Number((100 / count).toFixed(2)),
+      });
+    });
+
+    return sharesResult;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedHousehold) { alert('⚠️ Selecione um casal'); return; }
@@ -125,11 +185,6 @@ export default function NewTransaction() {
     if (paymentMethod === 'credit' && !creditCardId) { alert('⚠️ Selecione um cartão'); return; }
 
     setLoading(true);
-
-    const { data: members } = await supabase
-      .from('household_members').select('user_id')
-      .eq('household_id', selectedHousehold);
-    const otherUserId = members?.find((m: any) => m.user_id !== user.id)?.user_id;
 
     const txBase: any = {
       household_id: selectedHousehold,
@@ -171,6 +226,23 @@ export default function NewTransaction() {
       return;
     }
 
+    if (!newTx) {
+      setLoading(false);
+      return;
+    }
+
+    const sharesForTx = buildSharesForTransaction(finalAmount, user.id, newTx.id);
+    if (sharesForTx.length) {
+      await supabase.from('transaction_shares').insert(
+        sharesForTx.map((s) => ({
+          transaction_id: s.transactionId,
+          user_id: s.userId,
+          share_amount: s.shareAmount,
+          share_percent: s.sharePercent,
+        })),
+      );
+    }
+
     // Fatura de cartão
     if (paymentMethod === 'credit' && creditCardId && invoiceMonth) {
       const { data: existingInvoice } = await supabase
@@ -193,10 +265,11 @@ export default function NewTransaction() {
       }
     }
 
-    // CORRIGIDO: balance usando applyBalanceDelta centralizado
-    // currentUser pagou → otherUser deve metade para currentUser (delta positivo)
-    if (splitType === 'shared' && otherUserId) {
-      await applyBalanceDelta(selectedHousehold, user.id, otherUserId, finalAmount / 2);
+    if (splitType === 'shared') {
+      for (const share of sharesForTx) {
+        if (share.userId === user.id) continue;
+        await applyBalanceDelta(selectedHousehold, user.id, share.userId, share.shareAmount);
+      }
     }
 
     // Recorrência
@@ -222,10 +295,10 @@ export default function NewTransaction() {
   const selectedCard = creditCards.find(c => c.id === creditCardId);
 
   return (
-    <main style={{ padding: 16, maxWidth: 600, margin: '0 auto' }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ marginBottom: 8 }}>💸 Novo Gasto</h1>
-        <p style={{ color: '#666', fontSize: 14 }}>Preencha os dados do gasto abaixo</p>
+    <main className="mx-auto max-w-2xl px-4 py-6 space-y-5">
+      <div className="space-y-1">
+        <h1 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">💸 Novo gasto</h1>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">Preencha os dados do lançamento para o grupo atual.</p>
       </div>
 
       <form onSubmit={handleSubmit}>
@@ -499,20 +572,79 @@ export default function NewTransaction() {
         <div style={{ marginBottom: 20 }}>
           <label style={{ display: 'block', marginBottom: 8, fontWeight: 'bold' }}>✂️ Divisão:</label>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <button type="button" onClick={() => setSplitType('individual')}
-              style={{ padding: 16, border: splitType === 'individual' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: splitType === 'individual' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: splitType === 'individual' ? 'bold' : 'normal' }}
+            <button
+              type="button"
+              onClick={() => setSplitType('individual')}
+              style={{
+                padding: 16,
+                border: splitType === 'individual' ? '2px solid #3498db' : '1px solid #ddd',
+                borderRadius: 8,
+                backgroundColor: splitType === 'individual' ? '#e3f2fd' : 'white',
+                cursor: 'pointer',
+                fontWeight: splitType === 'individual' ? 'bold' : 'normal',
+              }}
             >
-              👤 Individual<br /><span style={{ fontSize: 12, color: '#666' }}>Só pra mim</span>
+              👤 Individual<br /><span style={{ fontSize: 12, color: '#666' }}>Só para você</span>
             </button>
-            <button type="button" onClick={() => setSplitType('shared')}
-              style={{ padding: 16, border: splitType === 'shared' ? '2px solid #3498db' : '1px solid #ddd', borderRadius: 8, backgroundColor: splitType === 'shared' ? '#e3f2fd' : 'white', cursor: 'pointer', fontWeight: splitType === 'shared' ? 'bold' : 'normal' }}
+            <button
+              type="button"
+              onClick={() => setSplitType('shared')}
+              style={{
+                padding: 16,
+                border: splitType === 'shared' ? '2px solid #3498db' : '1px solid #ddd',
+                borderRadius: 8,
+                backgroundColor: splitType === 'shared' ? '#e3f2fd' : 'white',
+                cursor: 'pointer',
+                fontWeight: splitType === 'shared' ? 'bold' : 'normal',
+              }}
             >
-              👥 Compartilhado<br /><span style={{ fontSize: 12, color: '#666' }}>50/50 no casal</span>
+              👥 Compartilhado<br /><span style={{ fontSize: 12, color: '#666' }}>Entre membros do grupo</span>
             </button>
           </div>
+
+          {splitType === 'shared' && groupMembers.length > 0 && (
+            <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: '1px dashed #ddd', backgroundColor: '#fafafa' }}>
+              <div style={{ fontSize: 13, fontWeight: 'bold', marginBottom: 6 }}>Quem participa?</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {groupMembers.map((m) => {
+                  const enabled = shares[m.id]?.enabled !== false;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() =>
+                        setShares((prev) => ({
+                          ...prev,
+                          [m.id]: { enabled: !enabled },
+                        }))
+                      }
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: 20,
+                        border: enabled ? '2px solid #3498db' : '1px solid #ddd',
+                        backgroundColor: enabled ? '#e3f2fd' : 'white',
+                        fontSize: 12,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {enabled ? '✅ ' : '⬜️ '}
+                      {m.name}
+                    </button>
+                  );
+                })}
+              </div>
+              {amount && (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                  Selecione quem participa; o app divide igualmente entre {sharedParticipantsCount} pessoa(s).
+                </div>
+              )}
+            </div>
+          )}
+
           {splitType === 'shared' && amount && (
             <div style={{ marginTop: 12, padding: 12, backgroundColor: '#fff3cd', borderRadius: 8, fontSize: 14, textAlign: 'center' }}>
-              💡 Cada um paga: <strong>{formatCurrency(finalAmount / 2)}</strong>
+              💡 Cada participante paga aproximadamente:{' '}
+              <strong>{formatCurrency(finalAmount / sharedParticipantsCount)}</strong>
             </div>
           )}
         </div>
