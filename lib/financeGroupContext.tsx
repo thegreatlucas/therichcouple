@@ -99,17 +99,19 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
         });
       }
 
-      setGroups(groupsMapped);
-      setMembers(membersMapped);
-
       const stored =
         typeof window !== 'undefined' ? window.localStorage.getItem('activeFinanceGroupId') : null;
       const initialId =
         stored && groupsMapped.some((g) => g.id === stored)
           ? stored
           : groupsMapped[0]?.id ?? null;
-      setActiveGroupIdState(initialId);
-      setLoading(false);
+
+      // ✅ CORRIGIDO: seta tudo atomicamente antes de desligar o loading,
+      // evitando o race condition onde loading=false mas activeGroupId ainda é null
+      setGroups(groupsMapped);
+      setMembers(membersMapped);
+      setActiveGroupIdState(initialId); // ← activeGroupId preenchido ANTES do loading=false
+      setLoading(false);                // ← loading só vira false depois de tudo pronto
     }
 
     load();
