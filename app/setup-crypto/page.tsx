@@ -1,427 +1,343 @@
 'use client';
-// app/setup-crypto/page.tsx
-// Compartilhamento seguro da chave AES do household via QR code ou código manual
-// Fluxo: Criador gera → QR exibido → Parceiro escaneia → Chave importada
+// app/categories/page.tsx — Com suporte a subcategorias
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
 import Header from '@/app/components/Header';
-import { useCrypto } from '@/lib/cryptoContext';
-import { exportKey, importKey, encryptField, decryptField, deriveKey } from '@/lib/crypto';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
-type Mode = 'choose' | 'share' | 'receive' | 'success';
-
-// Gera string aleatória de N chars (maiúsculo + números, sem ambíguos)
-function randomCode(n: number) {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  return Array.from(crypto.getRandomValues(new Uint8Array(n)))
-    .map(b => chars[b % chars.length])
-    .join('');
+interface Category {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  parent_id: string | null;
+  created_at: string;
+  subcategories?: Category[];
 }
 
-export default function SetupCryptoPage() {
-  const router = useRouter();
-  const { householdKey, setHouseholdKey } = useCrypto();
-  const [mode, setMode] = useState<Mode>('choose');
+export default function CategoriesPage() {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [householdId, setHouseholdId] = useState<string | null>(null);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [formData, setFormData] = useState({
+    name: '',
+    icon: '📁',
+    color: '#3498db',
+    parent_id: '',
+  });
+  const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
-  // Share flow
-  const [transferCode, setTransferCode] = useState('');
-  const [tempPin, setTempPin] = useState('');
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [expiresAt, setExpiresAt] = useState<Date | null>(null);
-  const [countdown, setCountdown] = useState(600);
-  const qrCanvasRef = useRef<HTMLCanvasElement>(null);
+  const iconOptions = ['🍔','🚗','🏠','💡','🎮','👕','💊','✈️','🎬','📚','🏋️','🐶','💰','🎁','📱','🛒','☕','🍕','🎵','⚽','🧴','🏥','🎓','💻','🌿'];
+  const colorOptions = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#34495e','#e91e63','#00bcd4'];
 
-  // Receive flow
-  const [inputCode, setInputCode] = useState('');
-  const [inputPin, setInputPin] = useState('');
+  useEffect(() => { checkAuth(); }, []);
 
-  useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { router.push('/login'); return; }
-      setCurrentUserId(user.id);
-      const { data: member } = await supabase
-        .from('household_members').select('household_id').eq('user_id', user.id).single();
-      if (member) setHouseholdId(member.household_id);
-    }
-    init();
-  }, []);
+  async function checkAuth() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { router.push('/login'); return; }
+    const { data: memberData, error } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+    const memberData = members?.[0] ?? null;
+    if (!memberData) { router.push('/setup'); return; }
+    setHouseholdId(memberData.household_id);
+    loadCategories(memberData.household_id);
+  }
 
-  // Countdown timer para o código expirar
-  useEffect(() => {
-    if (mode !== 'share' || !expiresAt) return;
-    const interval = setInterval(() => {
-      const secs = Math.max(0, Math.round((expiresAt.getTime() - Date.now()) / 1000));
-      setCountdown(secs);
-      if (secs === 0) clearInterval(interval);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [mode, expiresAt]);
+  async function loadCategories(hid: string) {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('household_id', hid)
+      .order('name');
 
-  // ── SHARE: Gera código e QR ──────────────────────────────────
-  async function generateTransfer() {
-    if (!householdKey || !householdId || !currentUserId) {
-      setError('Chave do cofre não carregada. Desbloqueie o PIN primeiro.');
-      return;
-    }
+    if (error) { setLoading(false); return; }
 
-    setLoading(true);
-    setError(null);
+    // Monta a árvore: separa pais e filhos
+    const all = (data || []) as Category[];
+    const roots = all.filter(c => !c.parent_id);
+    roots.forEach(r => {
+      r.subcategories = all.filter(c => c.parent_id === r.id);
+    });
 
-    try {
-      // 1. Exporta a chave do household em base64
-      const rawKeyB64 = await exportKey(householdKey);
-
-      // 2. Gera senha temporária aleatória (8 chars) e código de 8 chars
-      const pin = randomCode(8);
-      const code = randomCode(8);
-      setTempPin(pin);
-      setTransferCode(code);
-
-      // 3. Deriva chave a partir do PIN temporário e criptografa o payload
-      const salt = crypto.getRandomValues(new Uint8Array(16));
-      const saltB64 = btoa(String.fromCharCode(...Array.from(salt)));
-      const pinKey = await deriveKey(pin, salt);
-      const encryptedPayload = await encryptField(rawKeyB64, pinKey);
-
-      // 4. Salva no Supabase (expira em 10 min)
-      const { error: dbErr } = await supabase.from('crypto_key_transfers').insert({
-        household_id: householdId,
-        created_by: currentUserId,
-        encrypted_payload: encryptedPayload,
-        temp_salt: saltB64,
-        transfer_code: code,
-      });
-
-      if (dbErr) { setError('Erro ao gerar código: ' + dbErr.message); setLoading(false); return; }
-
-      // 5. Gera QR code (canvas manual — sem biblioteca externa)
-      const qrPayload = JSON.stringify({ code, pin });
-      await drawQR(qrPayload);
-
-      const exp = new Date(Date.now() + 10 * 60 * 1000);
-      setExpiresAt(exp);
-      setMode('share');
-    } catch (e: any) {
-      setError('Erro ao gerar: ' + e.message);
-    }
-
+    setCategories(roots);
     setLoading(false);
   }
 
-  // QR Code desenhado manualmente no canvas (implementação básica sem lib)
-  // Usa a URL com qr-server.com via img tag — não precisa de lib
-  async function drawQR(data: string) {
-    // Codifica o payload como data URL via QR server público
-    const encoded = encodeURIComponent(data);
-    setQrDataUrl(`https://api.qrserver.com/v1/create-qr-code/?data=${encoded}&size=200x200&margin=10`);
-  }
-
-  // ── RECEIVE: Importa a chave ──────────────────────────────────
-  async function importTransfer(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!inputCode.trim() || !inputPin.trim()) return;
-    setLoading(true);
-    setError(null);
+    if (!formData.name.trim()) return;
 
-    try {
-      const code = inputCode.trim().toUpperCase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { data: members } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+      const member = members?.[0] ?? null;
+    if (!member) return;
+    const hid = member.household_id;
 
-      // 1. Busca o transfer no Supabase
-      const { data: transfer, error: dbErr } = await supabase
-        .from('crypto_key_transfers')
-        .select('*')
-        .eq('transfer_code', code)
-        .eq('used', false)
-        .gt('expires_at', new Date().toISOString())
-        .single();
+    const base: any = {
+      name: formData.name,
+      icon: formData.icon,
+      color: formData.color,
+      parent_id: formData.parent_id || null,
+    };
 
-      if (dbErr || !transfer) {
-        setError('Código inválido, expirado ou já utilizado.');
-        setLoading(false);
-        return;
-      }
-
-      // 2. Deriva chave a partir do PIN digitado e descriptografa
-      const salt = Uint8Array.from(atob(transfer.temp_salt), c => c.charCodeAt(0));
-      const pinKey = await deriveKey(inputPin.trim(), salt);
-
-      let rawKeyB64: string;
-      try {
-        rawKeyB64 = await decryptField(transfer.encrypted_payload, pinKey);
-      } catch {
-        setError('PIN incorreto. Verifique e tente novamente.');
-        setLoading(false);
-        return;
-      }
-
-      // 3. Importa a chave AES
-      const key = await importKey(rawKeyB64);
-      setHouseholdKey(key);
-
-      // 4. Marca como usado
-      await supabase.from('crypto_key_transfers')
-        .update({ used: true })
-        .eq('id', transfer.id);
-
-      setMode('success');
-    } catch (e: any) {
-      setError('Erro ao importar chave: ' + e.message);
+    if (editingId) {
+      const payload = await encryptRecord(base);
+      const { error } = await supabase.from('categories').update(payload).eq('id', editingId);
+      if (error) { alert('Erro: ' + error.message); return; }
+    } else {
+      const payload = await encryptRecord({ ...base, household_id: hid });
+      const { error } = await supabase.from('categories').insert(payload);
+      if (error) { alert('Erro: ' + error.message); return; }
     }
 
-    setLoading(false);
+    resetForm();
+    loadCategories(hid);
   }
 
-  const mins = String(Math.floor(countdown / 60)).padStart(2, '0');
-  const secs = String(countdown % 60).padStart(2, '0');
+  async function handleDelete(id: string, name: string, hasChildren: boolean) {
+    const msg = hasChildren
+      ? `Deletar "${name}" e todas as suas subcategorias?`
+      : `Deletar "${name}"?`;
+    if (!confirm(msg)) return;
+    await supabase.from('categories').delete().eq('id', id);
+    if (householdId) loadCategories(householdId);
+  }
 
-  // ──────────────────────────────────────────────────────────────
-  // CHOOSE VIEW
-  // ──────────────────────────────────────────────────────────────
-  if (mode === 'choose') return (
-    <>
-      <Header title="🔐 Compartilhar chave" backHref="/setup" />
-      <main style={{ padding: 16, maxWidth: 480, margin: '0 auto' }}>
-        <div style={{ marginBottom: 24 }}>
-          <h2 style={{ color: 'var(--text)', marginBottom: 6 }}>Compartilhar chave do cofre</h2>
-          <p style={{ fontSize: 14, color: 'var(--text3)', lineHeight: 1.6 }}>
-            Para que vocês dois possam ver os dados criptografados, o parceiro(a) precisa receber a chave AES do household de forma segura.
-          </p>
-        </div>
+  function startEdit(cat: Category) {
+    setEditingId(cat.id);
+    setFormData({ name: cat.name, icon: cat.icon || '📁', color: cat.color || '#3498db', parent_id: cat.parent_id || '' });
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
-        {error && (
-          <div style={{ backgroundColor: '#fde8e8', border: '1px solid #f5c6cb', borderRadius: 10, padding: '12px 14px', marginBottom: 16, color: '#7b1a1a', fontSize: 14 }}>
-            ❌ {error}
-          </div>
-        )}
+  function resetForm() {
+    setEditingId(null);
+    setFormData({ name: '', icon: '📁', color: '#3498db', parent_id: '' });
+    setShowForm(false);
+  }
 
-        <div style={{ display: 'grid', gap: 12 }}>
-          {/* Card: Quero compartilhar */}
-          <button
-            onClick={generateTransfer}
-            disabled={loading || !householdKey}
-            style={{
-              padding: 20, border: '2px solid #3498db', borderRadius: 14,
-              backgroundColor: 'var(--surface)', cursor: loading ? 'wait' : 'pointer',
-              textAlign: 'left', opacity: !householdKey ? 0.6 : 1,
-            }}
-          >
-            <div style={{ fontSize: 32, marginBottom: 8 }}>📤</div>
-            <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)', marginBottom: 4 }}>
-              {loading ? 'Gerando código...' : 'Quero compartilhar minha chave'}
-            </div>
-            <div style={{ fontSize: 13, color: 'var(--text3)' }}>
-              Gera um QR code + código de 1 uso que expira em 10 minutos. Use no celular do seu parceiro(a).
-            </div>
-            {!householdKey && (
-              <div style={{ marginTop: 8, fontSize: 12, color: '#e67e22', fontWeight: 600 }}>
-                ⚠️ Desbloqueie o PIN do cofre no dashboard primeiro
-              </div>
-            )}
-          </button>
+  function toggleExpand(id: string) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
 
-          {/* Card: Quero receber */}
-          <button
-            onClick={() => { setMode('receive'); setError(null); }}
-            style={{
-              padding: 20, border: '2px solid #2ecc71', borderRadius: 14,
-              backgroundColor: 'var(--surface)', cursor: 'pointer',
-              textAlign: 'left',
-            }}
-          >
-            <div style={{ fontSize: 32, marginBottom: 8 }}>📥</div>
-            <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)', marginBottom: 4 }}>
-              Quero receber a chave
-            </div>
-            <div style={{ fontSize: 13, color: 'var(--text3)' }}>
-              Meu parceiro(a) gerou um código. Digito aqui para importar a chave para este dispositivo.
-            </div>
-          </button>
-        </div>
-      </main>
-    </>
-  );
+  // Categorias raiz para o select de pai (excluindo a própria ao editar)
+  const parentOptions = categories.filter(c => c.id !== editingId);
 
-  // ──────────────────────────────────────────────────────────────
-  // SHARE VIEW — exibe QR + código manual
-  // ──────────────────────────────────────────────────────────────
-  if (mode === 'share') return (
-    <>
-      <Header title="📤 Compartilhar chave" backHref="/setup" />
-      <main style={{ padding: 16, maxWidth: 420, margin: '0 auto', textAlign: 'center' }}>
+  if (loading) return <main style={{ padding: 16, color: 'var(--text)' }}>Carregando...</main>;
 
-        {/* Countdown */}
-        <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 8,
-          padding: '6px 16px', borderRadius: 20,
-          backgroundColor: countdown > 120 ? '#f0fff5' : '#fff3cd',
-          border: `1px solid ${countdown > 120 ? '#b7e4a0' : '#ffc107'}`,
-          marginBottom: 20, fontSize: 14, fontWeight: 600,
-          color: countdown > 120 ? '#1a5e34' : '#856404',
-        }}>
-          ⏱️ Expira em {mins}:{secs}
-        </div>
-
-        {/* QR Code */}
-        {qrDataUrl && (
-          <div style={{ marginBottom: 20 }}>
-            <p style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 12 }}>
-              Peça para o parceiro(a) escanear com a câmera do celular:
-            </p>
-            <div style={{ display: 'inline-block', padding: 12, backgroundColor: 'white', borderRadius: 12, border: '2px solid var(--border)', boxShadow: 'var(--shadow)' }}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={qrDataUrl} alt="QR Code" width={200} height={200} style={{ display: 'block' }} />
-            </div>
-          </div>
-        )}
-
-        {/* Separador */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-          <div style={{ flex: 1, height: 1, backgroundColor: 'var(--border)' }} />
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>ou digitar manualmente</span>
-          <div style={{ flex: 1, height: 1, backgroundColor: 'var(--border)' }} />
-        </div>
-
-        {/* Código manual */}
-        <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 20, marginBottom: 16 }}>
-          <p style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 10 }}>
-            Passe estes dois campos para o parceiro(a):
-          </p>
-
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Código de transferência</div>
-            <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: 6, fontFamily: 'monospace', color: 'var(--text)', padding: '10px 16px', backgroundColor: 'var(--surface2)', borderRadius: 8, border: '2px dashed #3498db' }}>
-              {transferCode}
-            </div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.5px' }}>PIN temporário</div>
-            <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: 6, fontFamily: 'monospace', color: '#e74c3c', padding: '10px 16px', backgroundColor: '#fff5f5', borderRadius: 8, border: '2px dashed #e74c3c' }}>
-              {tempPin}
-            </div>
-          </div>
-        </div>
-
-        {/* Botões de cópia */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 20 }}>
-          <button
-            onClick={() => { navigator.clipboard.writeText(transferCode); }}
-            style={{ padding: '10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
-            📋 Copiar código
-          </button>
-          <button
-            onClick={() => { navigator.clipboard.writeText(`Código: ${transferCode}\nPIN: ${tempPin}`); }}
-            style={{ padding: '10px', backgroundColor: 'var(--surface2)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
-            📤 Copiar tudo
-          </button>
-        </div>
-
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6, padding: '10px 14px', backgroundColor: 'var(--surface2)', borderRadius: 8 }}>
-          🔒 Esta chave nunca transita pelo servidor. O Supabase armazena apenas o payload criptografado. Só quem tem o código + PIN consegue descriptografar.
-        </div>
-
-        {countdown === 0 && (
-          <div style={{ marginTop: 16, padding: 12, backgroundColor: '#fde8e8', borderRadius: 10, color: '#7b1a1a', fontSize: 14 }}>
-            ⏰ Código expirado. <button onClick={() => { setMode('choose'); setQrDataUrl(null); }} style={{ background: 'none', border: 'none', color: '#3498db', cursor: 'pointer', fontWeight: 600 }}>Gerar novo</button>
-          </div>
-        )}
-      </main>
-    </>
-  );
-
-  // ──────────────────────────────────────────────────────────────
-  // RECEIVE VIEW — parceiro digita código + PIN
-  // ──────────────────────────────────────────────────────────────
-  if (mode === 'receive') return (
-    <>
-      <Header title="📥 Receber chave" backHref="/setup" />
-      <main style={{ padding: 16, maxWidth: 420, margin: '0 auto' }}>
-        <div style={{ marginBottom: 24 }}>
-          <h2 style={{ color: 'var(--text)', marginBottom: 6 }}>Receber chave do cofre</h2>
-          <p style={{ fontSize: 14, color: 'var(--text3)' }}>
-            Digite o código e o PIN que seu parceiro(a) gerou.
-          </p>
-        </div>
-
-        {error && (
-          <div style={{ backgroundColor: '#fde8e8', border: '1px solid #f5c6cb', borderRadius: 10, padding: '12px 14px', marginBottom: 16, color: '#7b1a1a', fontSize: 14 }}>
-            ❌ {error}
-          </div>
-        )}
-
-        <form onSubmit={importTransfer}>
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>
-              Código de transferência
-            </label>
-            <input
-              type="text"
-              value={inputCode}
-              onChange={e => setInputCode(e.target.value.toUpperCase())}
-              placeholder="ABCD1234"
-              maxLength={8}
-              required
-              style={{ width: '100%', padding: '12px 14px', fontSize: 24, textAlign: 'center', letterSpacing: 6, fontFamily: 'monospace', borderRadius: 10, border: '2px dashed #3498db' }}
-            />
-          </div>
-
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>
-              PIN temporário
-            </label>
-            <input
-              type="text"
-              value={inputPin}
-              onChange={e => setInputPin(e.target.value.toUpperCase())}
-              placeholder="WXYZ5678"
-              maxLength={8}
-              required
-              style={{ width: '100%', padding: '12px 14px', fontSize: 24, textAlign: 'center', letterSpacing: 6, fontFamily: 'monospace', borderRadius: 10, border: '2px dashed #e74c3c', color: '#e74c3c' }}
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            style={{ width: '100%', padding: '14px', backgroundColor: loading ? 'var(--border)' : '#2ecc71', color: 'white', border: 'none', borderRadius: 10, cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 16 }}>
-            {loading ? '⏳ Importando...' : '🔓 Importar chave'}
-          </button>
-        </form>
-
-        <div style={{ marginTop: 16, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.6 }}>
-          O código expira 10 minutos após ser gerado e só pode ser usado uma vez.
-        </div>
-      </main>
-    </>
-  );
-
-  // ──────────────────────────────────────────────────────────────
-  // SUCCESS VIEW
-  // ──────────────────────────────────────────────────────────────
   return (
     <>
-      <Header title="✅ Chave importada" backHref="/dashboard" />
-      <main style={{ padding: 32, maxWidth: 420, margin: '0 auto', textAlign: 'center' }}>
-        <div style={{ fontSize: 72, marginBottom: 16 }}>🎉</div>
-        <h2 style={{ color: 'var(--text)', marginBottom: 8 }}>Chave importada!</h2>
-        <p style={{ fontSize: 15, color: 'var(--text3)', lineHeight: 1.6, marginBottom: 28 }}>
-          A chave do cofre foi importada com sucesso. Agora você consegue ver todos os dados criptografados do casal.
-        </p>
-        <button
-          onClick={() => router.push('/dashboard')}
-          style={{ padding: '14px 32px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 10, cursor: 'pointer', fontWeight: 700, fontSize: 16 }}>
-          🏠 Ir para o Dashboard
-        </button>
-        <div style={{ marginTop: 16, fontSize: 12, color: 'var(--text-muted)' }}>
-          A chave ficará ativa nesta sessão. Na próxima vez que abrir o app, use o PIN do cofre normalmente.
+      <Header title="Categorias" backHref="/dashboard" />
+      <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
+
+        {/* Header da página */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div>
+            <h1 style={{ color: 'var(--text)', margin: 0 }}>Categorias</h1>
+            <p style={{ color: 'var(--text3)', fontSize: 13, margin: '4px 0 0' }}>
+              {categories.length} categorias · {categories.reduce((n, c) => n + (c.subcategories?.length || 0), 0)} subcategorias
+            </p>
+          </div>
+          <button
+            onClick={() => { if (showForm) resetForm(); else setShowForm(true); }}
+            style={{ padding: '8px 16px', backgroundColor: showForm ? '#e74c3c' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+            {showForm ? '✖️ Cancelar' : '➕ Nova'}
+          </button>
         </div>
+
+        {/* Formulário */}
+        {showForm && (
+          <form onSubmit={handleSubmit} style={{ backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', padding: 20, borderRadius: 12, marginBottom: 24 }}>
+            <h3 style={{ marginTop: 0, color: 'var(--text)', marginBottom: 16 }}>
+              {editingId ? '✏️ Editar categoria' : '➕ Nova categoria'}
+            </h3>
+
+            {/* Categoria pai */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>
+                Tipo
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: !formData.parent_id ? '2px solid #3498db' : '1px solid var(--border)', backgroundColor: !formData.parent_id ? '#e8f4ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: !formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  🏷️ Categoria principal
+                </button>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: parentOptions[0]?.id || '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: formData.parent_id ? '2px solid #9b59b6' : '1px solid var(--border)', backgroundColor: formData.parent_id ? '#f3e8ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  ↳ Subcategoria
+                </button>
+              </div>
+            </div>
+
+            {/* Select de pai — aparece apenas se for subcategoria */}
+            {formData.parent_id !== '' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Categoria pai</label>
+                <select value={formData.parent_id} onChange={e => setFormData(f => ({ ...f, parent_id: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14 }}>
+                  {parentOptions.length === 0
+                    ? <option value="">Crie uma categoria principal primeiro</option>
+                    : parentOptions.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)
+                  }
+                </select>
+              </div>
+            )}
+
+            {/* Nome */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Nome</label>
+              <input type="text" value={formData.name} onChange={e => setFormData(f => ({ ...f, name: e.target.value }))}
+                placeholder={formData.parent_id ? 'Ex: Supermercado, iFood...' : 'Ex: Alimentação, Transporte...'}
+                required style={{ width: '100%', padding: '9px 12px', fontSize: 15, borderRadius: 8, border: '1px solid var(--border)' }} />
+            </div>
+
+            {/* Ícone */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Ícone</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {iconOptions.map(icon => (
+                  <button key={icon} type="button" onClick={() => setFormData(f => ({ ...f, icon }))}
+                    style={{ fontSize: 22, padding: 7, border: formData.icon === icon ? '2px solid #3498db' : '1px solid var(--border)', borderRadius: 8, backgroundColor: formData.icon === icon ? '#e3f2fd' : 'var(--surface)', cursor: 'pointer' }}>
+                    {icon}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Cor */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Cor</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {colorOptions.map(color => (
+                  <button key={color} type="button" onClick={() => setFormData(f => ({ ...f, color }))}
+                    style={{ width: 36, height: 36, backgroundColor: color, border: formData.color === color ? '3px solid var(--text)' : '2px solid transparent', borderRadius: 8, cursor: 'pointer' }} />
+                ))}
+              </div>
+            </div>
+
+            {/* Preview */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', backgroundColor: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: formData.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+                {formData.icon}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, color: 'var(--text)', fontSize: 15 }}>
+                  {formData.name || 'Nome da categoria'}
+                </div>
+                {formData.parent_id && (
+                  <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                    ↳ {parentOptions.find(p => p.id === formData.parent_id)?.name || ''}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit"
+                style={{ flex: 1, padding: '11px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 15 }}>
+                {editingId ? '💾 Salvar' : '➕ Criar'}
+              </button>
+              <button type="button" onClick={resetForm}
+                style={{ flex: 1, padding: '11px', backgroundColor: 'var(--border)', color: 'var(--text2)', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Lista em árvore */}
+        {categories.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🏷️</div>
+            <p>Nenhuma categoria ainda.</p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {categories.map(cat => {
+              const hasChildren = (cat.subcategories?.length || 0) > 0;
+              const isExpanded = expandedIds.has(cat.id);
+
+              return (
+                <div key={cat.id}>
+                  {/* Categoria principal */}
+                  <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: 'var(--shadow)' }}>
+                    <div style={{ width: 46, height: 46, borderRadius: 10, backgroundColor: cat.color || '#3498db', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
+                      {cat.icon || '📁'}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{cat.name}</div>
+                      {hasChildren && (
+                        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                          {cat.subcategories!.length} subcategoria{cat.subcategories!.length > 1 ? 's' : ''}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {hasChildren && (
+                        <button onClick={() => toggleExpand(cat.id)}
+                          style={{ padding: '6px 10px', backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 14, color: 'var(--text3)' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </button>
+                      )}
+                      <button onClick={() => { setFormData(f => ({ ...f, parent_id: cat.id })); setShowForm(true); }}
+                        style={{ padding: '6px 10px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}
+                        title="Adicionar subcategoria">
+                        +↳
+                      </button>
+                      <button onClick={() => startEdit(cat)}
+                        style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        ✏️
+                      </button>
+                      <button onClick={() => handleDelete(cat.id, cat.name, hasChildren)}
+                        style={{ padding: '6px 10px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Subcategorias */}
+                  {hasChildren && isExpanded && (
+                    <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {cat.subcategories!.map(sub => (
+                        <div key={sub.id} style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, borderLeft: `3px solid ${cat.color || '#3498db'}` }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: -4 }}>↳</div>
+                          <div style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: sub.color || cat.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0, opacity: 0.9 }}>
+                            {sub.icon || cat.icon}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>{sub.name}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={() => startEdit(sub)}
+                              style={{ padding: '4px 8px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              ✏️
+                            </button>
+                            <button onClick={() => handleDelete(sub.id, sub.name, false)}
+                              style={{ padding: '4px 8px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </main>
     </>
   );
