@@ -1,492 +1,344 @@
 'use client';
+// app/categories/page.tsx — Com suporte a subcategorias
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
-import { formatCurrency } from '@/lib/format';
+import Header from '@/app/components/Header';
+import { useEncryptedInsert } from '@/lib/useEncryptedInsert';
 
-const INCOME_TYPES = [
-  { value: 'salary',     label: '💼 Salário' },
-  { value: 'freelance',  label: '💻 Freelance' },
-  { value: 'bonus',      label: '🎯 Bônus' },
-  { value: 'vr',         label: '🍽️ Vale Refeição' },
-  { value: 'va',         label: '🛒 Vale Alimentação' },
-  { value: 'investment', label: '📈 Rendimento' },
-  { value: 'other',      label: '❓ Outro' },
-];
+interface Category {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  parent_id: string | null;
+  created_at: string;
+  subcategories?: Category[];
+}
 
-const ACCOUNT_TYPES = [
-  { value: 'checking',     label: '🏦 Conta Corrente' },
-  { value: 'savings',      label: '💰 Poupança' },
-  { value: 'cash',         label: '💵 Dinheiro' },
-  { value: 'meal_voucher', label: '🍽️ Vale Refeição' },
-  { value: 'food_voucher', label: '🛒 Vale Alimentação' },
-  { value: 'investment',   label: '📈 Investimento' },
-  { value: 'other',        label: '❓ Outro' },
-];
-
-const RECURRENCE_SUGGESTIONS = [
-  { name: 'Netflix',   amount: '' },
-  { name: 'Spotify',   amount: '' },
-  { name: 'Internet',  amount: '' },
-  { name: 'Academia',  amount: '' },
-  { name: 'Aluguel',   amount: '' },
-];
-
-export default function OnboardingPage() {
-  const [step, setStep] = useState(1);
+export default function CategoriesPage() {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [householdId, setHouseholdId] = useState<string | null>(null);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [userName, setUserName] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [initLoading, setInitLoading] = useState(true);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [formData, setFormData] = useState({
+    name: '',
+    icon: '📁',
+    color: '#3498db',
+    parent_id: '',
+  });
   const router = useRouter();
+  const { encryptRecord } = useEncryptedInsert();
 
-  // Step 1 — Renda
-  const [incomes, setIncomes] = useState([
-    { description: '', amount: '', type: 'salary' },
-  ]);
+  const iconOptions = ['🍔','🚗','🏠','💡','🎮','👕','💊','✈️','🎬','📚','🏋️','🐶','💰','🎁','📱','🛒','☕','🍕','🎵','⚽','🧴','🏥','🎓','💻','🌿'];
+  const colorOptions = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#34495e','#e91e63','#00bcd4'];
 
-  // Step 2 — Contas
-  const [accounts, setAccounts] = useState([
-    { name: '', type: 'checking' },
-  ]);
+  useEffect(() => { checkAuth(); }, []);
 
-  // Step 3 — Recorrências
-  const [recurrences, setRecurrences] = useState([
-    { name: '', amount: '', due_day: '1' },
-  ]);
-
-  useEffect(() => { init(); }, []);
-
-  async function init() {
+  async function checkAuth() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
-    setUserId(user.id);
-    setUserName(user.user_metadata?.name || user.email?.split('@')[0] || '');
-
-    const { data: member } = await supabase
-      .from('household_members')
-      .select('household_id')
-      .eq('user_id', user.id)
-      .single();
-
-    if (!member) { router.push('/setup'); return; }
-    setHouseholdId(member.household_id);
-    setInitLoading(false);
+    const { data: memberData, error } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+    const memberData = members?.[0] ?? null;
+    if (!memberData) { router.push('/setup'); return; }
+    setHouseholdId(memberData.household_id);
+    loadCategories(memberData.household_id);
   }
 
-  // ── Step 1: Save incomes ──────────────────────────────────
-  async function handleSaveIncomes() {
-    if (!householdId || !userId) return;
-    setLoading(true);
+  async function loadCategories(hid: string) {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('household_id', hid)
+      .order('name');
 
-    const validIncomes = incomes.filter(i => i.description.trim() && parseFloat(i.amount) > 0);
+    if (error) { setLoading(false); return; }
 
-    if (validIncomes.length > 0) {
-      const now = new Date();
-      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    // Monta a árvore: separa pais e filhos
+    const all = (data || []) as Category[];
+    const roots = all.filter(c => !c.parent_id);
+    roots.forEach(r => {
+      r.subcategories = all.filter(c => c.parent_id === r.id);
+    });
 
-      await supabase.from('incomes').insert(
-        validIncomes.map(i => ({
-          household_id: householdId,
-          user_id: userId,
-          description: i.description.trim(),
-          amount: parseFloat(i.amount),
-          type: i.type,
-          recurrence: 'monthly',
-          month,
-        }))
-      );
+    setCategories(roots);
+    setLoading(false);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!formData.name.trim()) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+    const { data: members } = await supabase
+      .from('household_members').select('household_id').eq('user_id', user.id).limit(1);
+      const member = members?.[0] ?? null;
+    if (!member) return;
+    const hid = member.household_id;
+
+    const base: any = {
+      name: formData.name,
+      icon: formData.icon,
+      color: formData.color,
+      parent_id: formData.parent_id || null,
+    };
+
+    if (editingId) {
+      const payload = await encryptRecord(base);
+      const { error } = await supabase.from('categories').update(payload).eq('id', editingId);
+      if (error) { alert('Erro: ' + error.message); return; }
+    } else {
+      const payload = await encryptRecord({ ...base, household_id: hid });
+      const { error } = await supabase.from('categories').insert(payload);
+      if (error) { alert('Erro: ' + error.message); return; }
     }
 
-    setLoading(false);
-    setStep(2);
+    resetForm();
+    loadCategories(hid);
   }
 
-  // ── Step 2: Save accounts ──────────────────────────────────
-  async function handleSaveAccounts() {
-    if (!householdId || !userId) return;
-    setLoading(true);
-
-    const validAccounts = accounts.filter(a => a.name.trim());
-
-    if (validAccounts.length > 0) {
-      await supabase.from('accounts').insert(
-        validAccounts.map(a => ({
-          household_id: householdId,
-          owner_id: userId,
-          name: a.name.trim(),
-          type: a.type,
-        }))
-      );
-    }
-
-    setLoading(false);
-    setStep(3);
+  async function handleDelete(id: string, name: string, hasChildren: boolean) {
+    const msg = hasChildren
+      ? `Deletar "${name}" e todas as suas subcategorias?`
+      : `Deletar "${name}"?`;
+    if (!confirm(msg)) return;
+    await supabase.from('categories').delete().eq('id', id);
+    if (householdId) loadCategories(householdId);
   }
 
-  // ── Step 3: Save recurrences ──────────────────────────────
-  async function handleSaveRecurrences() {
-    if (!householdId) return;
-    setLoading(true);
-
-    const validRec = recurrences.filter(r => r.name.trim() && parseFloat(r.amount) > 0);
-
-    if (validRec.length > 0) {
-      const now = new Date();
-
-      for (const r of validRec) {
-        const dueDay = parseInt(r.due_day) || 1;
-        const nextDate = new Date(now.getFullYear(), now.getMonth(), dueDay);
-        if (nextDate <= now) nextDate.setMonth(nextDate.getMonth() + 1);
-
-        await supabase.from('recurrence_rules').insert({
-          household_id: householdId,
-          name: r.name.trim(),
-          recurrence_type: 'fixed',
-          amount: parseFloat(r.amount),
-          due_day: dueDay,
-          day_of_month: dueDay,
-          frequency: 'monthly',
-          next_date: nextDate.toISOString().split('T')[0],
-          active: true,
-          split: 'individual',
-          payment_method: 'pix',
-        });
-      }
-    }
-
-    // Mark onboarding as done
-    await supabase.from('households')
-      .update({ onboarding_done: true })
-      .eq('id', householdId);
-
-    setLoading(false);
-    router.push('/dashboard');
+  function startEdit(cat: Category) {
+    setEditingId(cat.id);
+    setFormData({ name: cat.name, icon: cat.icon || '📁', color: cat.color || '#3498db', parent_id: cat.parent_id || '' });
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  // ── Shared styles ──────────────────────────────────────────
-  const inputStyle: React.CSSProperties = {
-    padding: '11px 14px', fontSize: 14, borderRadius: 10,
-    border: '1px solid #e0e0e0', outline: 'none',
-    backgroundColor: 'white', boxSizing: 'border-box',
-  };
+  function resetForm() {
+    setEditingId(null);
+    setFormData({ name: '', icon: '📁', color: '#3498db', parent_id: '' });
+    setShowForm(false);
+  }
 
-  if (initLoading) return <main style={{ padding: 24 }}><p style={{ color: '#999' }}>Carregando...</p></main>;
+  function toggleExpand(id: string) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
 
-  // ── Progress bar ──────────────────────────────────────────
-  const steps = ['Renda', 'Contas', 'Recorrências'];
+  // Categorias raiz para o select de pai (excluindo a própria ao editar)
+  const parentOptions = categories.filter(c => c.id !== editingId);
+
+  if (loading) return <main style={{ padding: 16, color: 'var(--text)' }}>Carregando...</main>;
 
   return (
-    <main style={{ maxWidth: 520, margin: '0 auto', padding: '32px 16px 80px' }}>
+    <>
+      <Header title="Categorias" backHref="/dashboard" />
+      <main style={{ padding: 16, maxWidth: 800, margin: '0 auto' }}>
 
-      {/* Header */}
-      <div style={{ marginBottom: 32, textAlign: 'center' }}>
-        <div style={{ fontSize: 32, marginBottom: 8 }}>💑</div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>
-          Olá{userName ? `, ${userName}` : ''}! Vamos configurar tudo.
-        </h1>
-        <p style={{ fontSize: 14, color: '#888', margin: '8px 0 0' }}>
-          3 passos rápidos para começar a usar o app.
-        </p>
-      </div>
+        {/* Header da página */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <div>
+            <h1 style={{ color: 'var(--text)', margin: 0 }}>Categorias</h1>
+            <p style={{ color: 'var(--text3)', fontSize: 13, margin: '4px 0 0' }}>
+              {categories.length} categorias · {categories.reduce((n, c) => n + (c.subcategories?.length || 0), 0)} subcategorias
+            </p>
+          </div>
+          <button
+            onClick={() => { if (showForm) resetForm(); else setShowForm(true); }}
+            style={{ padding: '8px 16px', backgroundColor: showForm ? '#e74c3c' : '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+            {showForm ? '✖️ Cancelar' : '➕ Nova'}
+          </button>
+        </div>
 
-      {/* Progress */}
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 32, gap: 0 }}>
-        {steps.map((s, i) => {
-          const n = i + 1;
-          const done = n < step;
-          const active = n === step;
-          return (
-            <div key={s} style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
-                <div style={{
-                  width: 32, height: 32, borderRadius: '50%', display: 'flex',
-                  alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700,
-                  backgroundColor: done ? '#2ecc71' : active ? '#3498db' : '#eee',
-                  color: done || active ? 'white' : '#aaa',
-                  transition: 'all 0.3s',
-                }}>
-                  {done ? '✓' : n}
-                </div>
-                <div style={{ fontSize: 11, color: active ? '#3498db' : done ? '#2ecc71' : '#aaa', marginTop: 4, fontWeight: active ? 600 : 400 }}>
-                  {s}
-                </div>
+        {/* Formulário */}
+        {showForm && (
+          <form onSubmit={handleSubmit} style={{ backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', padding: 20, borderRadius: 12, marginBottom: 24 }}>
+            <h3 style={{ marginTop: 0, color: 'var(--text)', marginBottom: 16 }}>
+              {editingId ? '✏️ Editar categoria' : '➕ Nova categoria'}
+            </h3>
+
+            {/* Categoria pai */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>
+                Tipo
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: !formData.parent_id ? '2px solid #3498db' : '1px solid var(--border)', backgroundColor: !formData.parent_id ? '#e8f4ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: !formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  🏷️ Categoria principal
+                </button>
+                <button type="button" onClick={() => setFormData(f => ({ ...f, parent_id: parentOptions[0]?.id || '' }))}
+                  style={{ padding: '10px 12px', borderRadius: 8, border: formData.parent_id ? '2px solid #9b59b6' : '1px solid var(--border)', backgroundColor: formData.parent_id ? '#f3e8ff' : 'var(--surface)', cursor: 'pointer', fontSize: 13, fontWeight: formData.parent_id ? 700 : 400, color: 'var(--text)' }}>
+                  ↳ Subcategoria
+                </button>
               </div>
-              {i < steps.length - 1 && (
-                <div style={{ height: 2, flex: 0.8, backgroundColor: done ? '#2ecc71' : '#eee', marginBottom: 18, transition: 'background 0.3s' }} />
-              )}
             </div>
-          );
-        })}
-      </div>
 
-      {/* ── STEP 1: Renda ── */}
-      {step === 1 && (
-        <div>
-          <h2 style={{ fontSize: 18, marginBottom: 4 }}>💵 Sua renda mensal</h2>
-          <p style={{ fontSize: 13, color: '#888', marginBottom: 20 }}>
-            Adicione suas fontes de renda. Pode pular e adicionar depois.
-          </p>
-
-          {incomes.map((inc, i) => (
-            <div key={i} style={{ border: '1px solid #eee', borderRadius: 12, padding: 16, marginBottom: 12, backgroundColor: '#fafafa' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Descrição</div>
-                  <input
-                    type="text"
-                    placeholder="Ex: Salário CLT"
-                    value={inc.description}
-                    onChange={e => setIncomes(incomes.map((x, j) => j === i ? { ...x, description: e.target.value } : x))}
-                    style={{ ...inputStyle, width: '100%' }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Valor (R$)</div>
-                  <input
-                    type="number"
-                    placeholder="5000"
-                    value={inc.amount}
-                    onChange={e => setIncomes(incomes.map((x, j) => j === i ? { ...x, amount: e.target.value } : x))}
-                    style={{ ...inputStyle, width: '100%' }}
-                  />
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Tipo</div>
-                <select
-                  value={inc.type}
-                  onChange={e => setIncomes(incomes.map((x, j) => j === i ? { ...x, type: e.target.value } : x))}
-                  style={{ ...inputStyle, width: '100%', cursor: 'pointer' }}
-                >
-                  {INCOME_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            {/* Select de pai — aparece apenas se for subcategoria */}
+            {formData.parent_id !== '' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Categoria pai</label>
+                <select value={formData.parent_id} onChange={e => setFormData(f => ({ ...f, parent_id: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 14 }}>
+                  {parentOptions.length === 0
+                    ? <option value="">Crie uma categoria principal primeiro</option>
+                    : parentOptions.map(p => <option key={p.id} value={p.id}>{p.icon} {p.name}</option>)
+                  }
                 </select>
               </div>
-              {incomes.length > 1 && (
-                <button
-                  onClick={() => setIncomes(incomes.filter((_, j) => j !== i))}
-                  style={{ marginTop: 10, background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 12 }}
-                >
-                  × Remover
-                </button>
-              )}
+            )}
+
+            {/* Nome */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 6 }}>Nome</label>
+              <input type="text" value={formData.name} onChange={e => setFormData(f => ({ ...f, name: e.target.value }))}
+                placeholder={formData.parent_id ? 'Ex: Supermercado, iFood...' : 'Ex: Alimentação, Transporte...'}
+                required style={{ width: '100%', padding: '9px 12px', fontSize: 15, borderRadius: 8, border: '1px solid var(--border)' }} />
             </div>
-          ))}
 
-          <button
-            onClick={() => setIncomes([...incomes, { description: '', amount: '', type: 'salary' }])}
-            style={{ width: '100%', padding: '10px', border: '1px dashed #3498db', borderRadius: 10, backgroundColor: 'transparent', color: '#3498db', cursor: 'pointer', fontSize: 14, marginBottom: 20 }}
-          >
-            + Adicionar outra renda
-          </button>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <button
-              onClick={() => setStep(2)}
-              style={{ padding: '13px', border: '1px solid #ddd', borderRadius: 10, backgroundColor: 'white', cursor: 'pointer', color: '#888', fontSize: 14 }}
-            >
-              Pular por agora
-            </button>
-            <button
-              onClick={handleSaveIncomes}
-              disabled={loading}
-              style={{ padding: '13px', border: 'none', borderRadius: 10, backgroundColor: loading ? '#95a5a6' : '#3498db', color: 'white', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14 }}
-            >
-              {loading ? 'Salvando...' : 'Próximo →'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── STEP 2: Contas ── */}
-      {step === 2 && (
-        <div>
-          <h2 style={{ fontSize: 18, marginBottom: 4 }}>🏦 Suas contas</h2>
-          <p style={{ fontSize: 13, color: '#888', marginBottom: 20 }}>
-            Cadastre suas contas bancárias para rastrear de onde saem os gastos.
-          </p>
-
-          {accounts.map((acc, i) => (
-            <div key={i} style={{ border: '1px solid #eee', borderRadius: 12, padding: 16, marginBottom: 12, backgroundColor: '#fafafa' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Nome</div>
-                  <input
-                    type="text"
-                    placeholder="Ex: Nubank, Inter, Bradesco..."
-                    value={acc.name}
-                    onChange={e => setAccounts(accounts.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
-                    style={{ ...inputStyle, width: '100%' }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Tipo</div>
-                  <select
-                    value={acc.type}
-                    onChange={e => setAccounts(accounts.map((x, j) => j === i ? { ...x, type: e.target.value } : x))}
-                    style={{ ...inputStyle, width: '100%', cursor: 'pointer' }}
-                  >
-                    {ACCOUNT_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
-                </div>
+            {/* Ícone */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Ícone</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {iconOptions.map(icon => (
+                  <button key={icon} type="button" onClick={() => setFormData(f => ({ ...f, icon }))}
+                    style={{ fontSize: 22, padding: 7, border: formData.icon === icon ? '2px solid #3498db' : '1px solid var(--border)', borderRadius: 8, backgroundColor: formData.icon === icon ? '#e3f2fd' : 'var(--surface)', cursor: 'pointer' }}>
+                    {icon}
+                  </button>
+                ))}
               </div>
-              {accounts.length > 1 && (
-                <button
-                  onClick={() => setAccounts(accounts.filter((_, j) => j !== i))}
-                  style={{ marginTop: 10, background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 12 }}
-                >
-                  × Remover
-                </button>
-              )}
             </div>
-          ))}
 
-          <button
-            onClick={() => setAccounts([...accounts, { name: '', type: 'checking' }])}
-            style={{ width: '100%', padding: '10px', border: '1px dashed #3498db', borderRadius: 10, backgroundColor: 'transparent', color: '#3498db', cursor: 'pointer', fontSize: 14, marginBottom: 20 }}
-          >
-            + Adicionar outra conta
-          </button>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <button
-              onClick={() => setStep(1)}
-              style={{ padding: '13px', border: '1px solid #ddd', borderRadius: 10, backgroundColor: 'white', cursor: 'pointer', color: '#888', fontSize: 14 }}
-            >
-              ← Voltar
-            </button>
-            <button
-              onClick={handleSaveAccounts}
-              disabled={loading}
-              style={{ padding: '13px', border: 'none', borderRadius: 10, backgroundColor: loading ? '#95a5a6' : '#3498db', color: 'white', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14 }}
-            >
-              {loading ? 'Salvando...' : 'Próximo →'}
-            </button>
-          </div>
-
-          <button
-            onClick={() => setStep(3)}
-            style={{ width: '100%', marginTop: 10, padding: '10px', border: 'none', background: 'none', color: '#aaa', cursor: 'pointer', fontSize: 13 }}
-          >
-            Pular por agora
-          </button>
-        </div>
-      )}
-
-      {/* ── STEP 3: Recorrências ── */}
-      {step === 3 && (
-        <div>
-          <h2 style={{ fontSize: 18, marginBottom: 4 }}>🔁 Contas fixas mensais</h2>
-          <p style={{ fontSize: 13, color: '#888', marginBottom: 20 }}>
-            Adicione contas que se repetem todo mês. O app vai lembrá-los de pagar.
-          </p>
-
-          {/* Sugestões rápidas */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>Sugestões rápidas:</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {RECURRENCE_SUGGESTIONS.map(s => (
-                <button
-                  key={s.name}
-                  onClick={() => {
-                    const alreadyAdded = recurrences.some(r => r.name === s.name);
-                    if (!alreadyAdded) {
-                      setRecurrences([...recurrences.filter(r => r.name.trim() || r.amount.trim()), { name: s.name, amount: '', due_day: '1' }]);
-                    }
-                  }}
-                  style={{
-                    padding: '6px 12px', border: '1px solid #ddd', borderRadius: 20,
-                    backgroundColor: recurrences.some(r => r.name === s.name) ? '#e8f4fd' : 'white',
-                    cursor: 'pointer', fontSize: 13,
-                    color: recurrences.some(r => r.name === s.name) ? '#3498db' : '#555',
-                  }}
-                >
-                  {s.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {recurrences.map((rec, i) => (
-            <div key={i} style={{ border: '1px solid #eee', borderRadius: 12, padding: 16, marginBottom: 12, backgroundColor: '#fafafa' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 10 }}>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Nome</div>
-                  <input
-                    type="text"
-                    placeholder="Netflix"
-                    value={rec.name}
-                    onChange={e => setRecurrences(recurrences.map((x, j) => j === i ? { ...x, name: e.target.value } : x))}
-                    style={{ ...inputStyle, width: '100%' }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Valor (R$)</div>
-                  <input
-                    type="number"
-                    placeholder="55,90"
-                    value={rec.amount}
-                    onChange={e => setRecurrences(recurrences.map((x, j) => j === i ? { ...x, amount: e.target.value } : x))}
-                    style={{ ...inputStyle, width: '100%' }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: 12, color: '#666', marginBottom: 4, fontWeight: 600 }}>Dia venc.</div>
-                  <input
-                    type="number"
-                    placeholder="1"
-                    min="1"
-                    max="28"
-                    value={rec.due_day}
-                    onChange={e => setRecurrences(recurrences.map((x, j) => j === i ? { ...x, due_day: e.target.value } : x))}
-                    style={{ ...inputStyle, width: '100%' }}
-                  />
-                </div>
+            {/* Cor */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontWeight: 600, fontSize: 13, color: 'var(--text2)', marginBottom: 8 }}>Cor</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {colorOptions.map(color => (
+                  <button key={color} type="button" onClick={() => setFormData(f => ({ ...f, color }))}
+                    style={{ width: 36, height: 36, backgroundColor: color, border: formData.color === color ? '3px solid var(--text)' : '2px solid transparent', borderRadius: 8, cursor: 'pointer' }} />
+                ))}
               </div>
-              {recurrences.length > 1 && (
-                <button
-                  onClick={() => setRecurrences(recurrences.filter((_, j) => j !== i))}
-                  style={{ marginTop: 10, background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontSize: 12 }}
-                >
-                  × Remover
-                </button>
-              )}
             </div>
-          ))}
 
-          <button
-            onClick={() => setRecurrences([...recurrences, { name: '', amount: '', due_day: '1' }])}
-            style={{ width: '100%', padding: '10px', border: '1px dashed #3498db', borderRadius: 10, backgroundColor: 'transparent', color: '#3498db', cursor: 'pointer', fontSize: 14, marginBottom: 20 }}
-          >
-            + Adicionar outra recorrência
-          </button>
+            {/* Preview */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', backgroundColor: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: formData.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+                {formData.icon}
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, color: 'var(--text)', fontSize: 15 }}>
+                  {formData.name || 'Nome da categoria'}
+                </div>
+                {formData.parent_id && (
+                  <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                    ↳ {parentOptions.find(p => p.id === formData.parent_id)?.name || ''}
+                  </div>
+                )}
+              </div>
+            </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <button
-              onClick={() => setStep(2)}
-              style={{ padding: '13px', border: '1px solid #ddd', borderRadius: 10, backgroundColor: 'white', cursor: 'pointer', color: '#888', fontSize: 14 }}
-            >
-              ← Voltar
-            </button>
-            <button
-              onClick={handleSaveRecurrences}
-              disabled={loading}
-              style={{ padding: '13px', border: 'none', borderRadius: 10, backgroundColor: loading ? '#95a5a6' : '#2ecc71', color: 'white', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 16 }}
-            >
-              {loading ? 'Salvando...' : '🚀 Concluir!'}
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="submit"
+                style={{ flex: 1, padding: '11px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 15 }}>
+                {editingId ? '💾 Salvar' : '➕ Criar'}
+              </button>
+              <button type="button" onClick={resetForm}
+                style={{ flex: 1, padding: '11px', backgroundColor: 'var(--border)', color: 'var(--text2)', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+                Cancelar
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Lista em árvore */}
+        {categories.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>🏷️</div>
+            <p>Nenhuma categoria ainda.</p>
           </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {categories.map(cat => {
+              const hasChildren = (cat.subcategories?.length || 0) > 0;
+              const isExpanded = expandedIds.has(cat.id);
 
-          <button
-            onClick={() => router.push('/dashboard')}
-            style={{ width: '100%', marginTop: 10, padding: '10px', border: 'none', background: 'none', color: '#aaa', cursor: 'pointer', fontSize: 13 }}
-          >
-            Pular e ir para o dashboard
-          </button>
-        </div>
-      )}
-    </main>
+              return (
+                <div key={cat.id}>
+                  {/* Categoria principal */}
+                  <div style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, boxShadow: 'var(--shadow)' }}>
+                    <div style={{ width: 46, height: 46, borderRadius: 10, backgroundColor: cat.color || '#3498db', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, flexShrink: 0 }}>
+                      {cat.icon || '📁'}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>{cat.name}</div>
+                      {hasChildren && (
+                        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                          {cat.subcategories!.length} subcategoria{cat.subcategories!.length > 1 ? 's' : ''}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {hasChildren && (
+                        <button onClick={() => toggleExpand(cat.id)}
+                          style={{ padding: '6px 10px', backgroundColor: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 14, color: 'var(--text3)' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </button>
+                      )}
+                      <button onClick={() => { setFormData(f => ({ ...f, parent_id: cat.id })); setShowForm(true); }}
+                        style={{ padding: '6px 10px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}
+                        title="Adicionar subcategoria">
+                        +↳
+                      </button>
+                      <button onClick={() => startEdit(cat)}
+                        style={{ padding: '6px 10px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        ✏️
+                      </button>
+                      <button onClick={() => handleDelete(cat.id, cat.name, hasChildren)}
+                        style={{ padding: '6px 10px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Subcategorias */}
+                  {hasChildren && isExpanded && (
+                    <div style={{ marginLeft: 24, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {cat.subcategories!.map(sub => (
+                        <div key={sub.id} style={{ backgroundColor: 'var(--surface)', border: '1px solid var(--border2)', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, borderLeft: `3px solid ${cat.color || '#3498db'}` }}>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: -4 }}>↳</div>
+                          <div style={{ width: 34, height: 34, borderRadius: 8, backgroundColor: sub.color || cat.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0, opacity: 0.9 }}>
+                            {sub.icon || cat.icon}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>{sub.name}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button onClick={() => startEdit(sub)}
+                              style={{ padding: '4px 8px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              ✏️
+                            </button>
+                            <button onClick={() => handleDelete(sub.id, sub.name, false)}
+                              style={{ padding: '4px 8px', backgroundColor: '#e74c3c', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </main>
+    </>
   );
 }
