@@ -66,7 +66,7 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
       const groupsMapped: FinanceGroup[] = [];
       const membersMapped: FinanceMember[] = [];
 
-      for (const row of rows || []) {
+      for (const row of (rows as any[]) || []) {
         const hh = (row as any).households;
         if (!hh) continue;
         const groupType: FinanceGroupType = (hh.group_type as FinanceGroupType) || 'couple';
@@ -87,8 +87,8 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
         });
         membersMapped.push({
           userId: user.id,
-          groupId: row.household_id,
-          role: ((row.role as MemberRole) || 'editor') satisfies MemberRole,
+          groupId: (row as any).household_id,
+          role: (((row as any).role as MemberRole) || 'editor') satisfies MemberRole,
         });
       }
 
