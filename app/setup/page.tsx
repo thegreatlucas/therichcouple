@@ -35,7 +35,7 @@ export default function SetupPage() {
 
   const router = useRouter();
   const { setHouseholdKey } = useCrypto();
-  const { groups, activeGroup, activeGroupId, reload } = useFinanceGroup();
+  const { groups, activeGroup, activeGroupId } = useFinanceGroup();
 
   useEffect(() => {
     init();
@@ -146,15 +146,10 @@ export default function SetupPage() {
 
     if (hKey) setHouseholdKey(hKey);
 
-    setHousehold(hh);
-    setHouseholdId(hh.id);
-    setHouseholdName(hh.name);
-    setShipName('');
-    setCloseMode('manual');
-    setCloseDay('');
     setLoading(false);
-    reload(); // ✅ CORRIGIDO: recarrega o FinanceGroupContext com o novo household
-    router.push('/dashboard'); // ✅ CORRIGIDO: navega após o contexto ser atualizado
+    // ✅ CORRIGIDO: navegação hard para forçar remount do FinanceGroupProvider
+    // Isso garante que o contexto busca os grupos novamente do zero
+    window.location.href = '/dashboard';
   }
 
   // ── Join household ──────────────────────────────────────────
@@ -183,12 +178,9 @@ export default function SetupPage() {
     await supabase.auth.updateUser({ data: { name: userName.trim() || user.email } });
     await supabase.from('profiles').upsert({ id: user.id, name: userName.trim() || '' }, { onConflict: 'id' });
 
-    setHousehold(hh);
-    setHouseholdId(hh.id);
-    setHouseholdName(hh.name);
     setLoading(false);
-    reload(); // ✅ CORRIGIDO: recarrega o FinanceGroupContext com o household recém-entrado
-    router.push('/dashboard'); // ✅ CORRIGIDO: navega após o contexto ser atualizado
+    // ✅ CORRIGIDO: navegação hard para forçar remount do FinanceGroupProvider
+    window.location.href = '/dashboard';
   }
 
   // ── Leave household ──────────────────────────────────────────
