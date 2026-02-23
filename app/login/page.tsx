@@ -37,25 +37,16 @@ export default function LoginPage() {
 
     if (error) { setErrorMsg('E-mail ou senha incorretos.'); return; }
 
-    // Verifica se já tem household → vai direto pro dashboard
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      const { data: member } = await supabase
-        .from('household_members')
-        .select('household_id')
-        .eq('user_id', user.id)
-        .single();
-
-      router.push(member ? '/dashboard' : '/setup');
-    } else {
-      router.push('/setup');
-    }
+    // Após login, deixa o contexto de Workspaces decidir se vai para dashboard ou setup
+    router.push('/dashboard');
   }
 
   return (
     <main style={{ padding: 16, maxWidth: 400, margin: '0 auto', paddingTop: 48 }}>
-      <h1 style={{ marginBottom: 4 }}>💑 Finanças do Casal</h1>
-      <p style={{ color: '#666', marginBottom: 32, fontSize: 14 }}>Gerencie as finanças juntos de forma simples.</p>
+      <h1 style={{ marginBottom: 4 }}>💰 Espaços Financeiros</h1>
+      <p style={{ color: '#666', marginBottom: 32, fontSize: 14 }}>
+        Organize suas finanças em workspaces para uso individual, casal ou família.
+      </p>
 
       {/* Toggle */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', border: '1px solid #ddd', borderRadius: 8, marginBottom: 24, overflow: 'hidden' }}>
