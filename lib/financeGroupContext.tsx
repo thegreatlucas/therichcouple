@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { FinanceGroup, FinanceGroupType, FinanceMember, MemberRole } from '@/lib/types/finance';
 
@@ -12,6 +12,7 @@ interface FinanceGroupContextValue {
   currentMemberRole: MemberRole | null;
   setActiveGroupId: (groupId: string) => void;
   loading: boolean;
+  reload: () => void; // ✅ NOVO: força recarregamento dos grupos
 }
 
 const FinanceGroupContext = createContext<FinanceGroupContextValue | undefined>(undefined);
@@ -21,6 +22,12 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
   const [members, setMembers] = useState<FinanceMember[]>([]);
   const [activeGroupId, setActiveGroupIdState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reloadCount, setReloadCount] = useState(0); // ✅ NOVO: contador para disparar reload
+
+  // ✅ NOVO: função exposta para forçar recarregamento
+  const reload = useCallback(() => {
+    setReloadCount((c) => c + 1);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,8 +102,12 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
       setGroups(groupsMapped);
       setMembers(membersMapped);
 
-      const stored = typeof window !== 'undefined' ? window.localStorage.getItem('activeFinanceGroupId') : null;
-      const initialId = stored && groupsMapped.some((g) => g.id === stored) ? stored : groupsMapped[0]?.id ?? null;
+      const stored =
+        typeof window !== 'undefined' ? window.localStorage.getItem('activeFinanceGroupId') : null;
+      const initialId =
+        stored && groupsMapped.some((g) => g.id === stored)
+          ? stored
+          : groupsMapped[0]?.id ?? null;
       setActiveGroupIdState(initialId);
       setLoading(false);
     }
@@ -105,7 +116,7 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadCount]); // ✅ CORRIGIDO: recarrega sempre que reload() for chamado
 
   const activeGroup = useMemo(
     () => (activeGroupId ? groups.find((g) => g.id === activeGroupId) ?? null : null),
@@ -133,6 +144,7 @@ export function FinanceGroupProvider({ children }: { children: React.ReactNode }
     currentMemberRole,
     setActiveGroupId,
     loading,
+    reload, // ✅ NOVO: exposto no contexto
   };
 
   return <FinanceGroupContext.Provider value={value}>{children}</FinanceGroupContext.Provider>;
@@ -143,4 +155,3 @@ export function useFinanceGroup() {
   if (!ctx) throw new Error('useFinanceGroup must be used within a FinanceGroupProvider');
   return ctx;
 }
-
