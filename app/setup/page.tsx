@@ -108,7 +108,7 @@ export default function SetupPage() {
   async function handleCreateHousehold(e: React.FormEvent) {
     e.preventDefault();
     setErrorMsg(null);
-    if (!newHouseholdName.trim()) { setErrorMsg('Digite um nome para o casal.'); return; }
+    if (!newHouseholdName.trim()) { setErrorMsg('Digite um nome para o grupo.'); return; }
     if (vaultPin && vaultPin.length < 4) { setErrorMsg('O PIN deve ter pelo menos 4 dígitos.'); return; }
 
     setLoading(true);
@@ -153,7 +153,7 @@ export default function SetupPage() {
     setCloseMode('manual');
     setCloseDay('');
     setView('settings');
-    setSuccessMsg('Casal criado com sucesso! 🎉 Compartilhe o código abaixo com seu parceiro(a).');
+    setSuccessMsg('Espaço financeiro criado com sucesso! 🎉 Compartilhe o código abaixo com quem for participar.');
     setLoading(false);
   }
 
@@ -175,14 +175,9 @@ export default function SetupPage() {
 
     const { data: existing } = await supabase
       .from('household_members').select('*')
-      .eq('household_id', hh.id).eq('user_id', user.id).single();
+      .eq('household_id', hh.id).eq('user_id', user.id).maybeSingle();
 
-    if (existing) { setErrorMsg('Você já faz parte deste casal.'); setLoading(false); return; }
-
-    const { data: members } = await supabase
-      .from('household_members').select('user_id').eq('household_id', hh.id);
-
-    if ((members || []).length >= 2) { setErrorMsg('Este casal já tem dois membros.'); setLoading(false); return; }
+    if (existing) { setErrorMsg('Você já faz parte deste espaço financeiro.'); setLoading(false); return; }
 
     await supabase.from('household_members').insert({ household_id: hh.id, user_id: user.id, role: 'member' });
     await supabase.auth.updateUser({ data: { name: userName.trim() || user.email } });
@@ -198,7 +193,7 @@ export default function SetupPage() {
 
   // ── Leave household ──────────────────────────────────────────
   async function handleLeave() {
-    if (!confirm('Sair deste casal? Seus dados não serão apagados.')) return;
+    if (!confirm('Sair deste espaço financeiro? Seus dados não serão apagados.')) return;
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     await supabase.from('household_members')
@@ -281,12 +276,12 @@ export default function SetupPage() {
             />
           </div>
 
-          {/* Casal */}
+          {/* Grupo */}
           <div style={sectionStyle}>
-            <div style={sectionTitle}>💑 Identidade do casal</div>
+            <div style={sectionTitle}>🏠 Identidade do espaço financeiro</div>
 
             <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>Nome do casal</label>
+              <label style={labelStyle}>Nome do grupo</label>
               <input
                 type="text"
                 value={householdName}
@@ -295,7 +290,7 @@ export default function SetupPage() {
                 style={inputStyle}
               />
               <div style={{ fontSize: 12, color: '#999', marginTop: 5 }}>
-                Nome padrão do casal, exibido no dashboard e relatórios.
+                Nome do espaço financeiro, exibido no dashboard e relatórios.
               </div>
             </div>
 
@@ -309,7 +304,7 @@ export default function SetupPage() {
                 style={inputStyle}
               />
               <div style={{ fontSize: 12, color: '#999', marginTop: 5 }}>
-                Um apelido criativo só de vocês dois. Aparece no topo do dashboard.
+                Um apelido criativo do grupo. Aparece no topo do dashboard.
               </div>
             </div>
           </div>
@@ -318,7 +313,7 @@ export default function SetupPage() {
           <div style={sectionStyle}>
             <div style={sectionTitle}>📅 Fechamento mensal</div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 14, lineHeight: 1.5 }}>
-              O fechamento salva um snapshot do mês: renda, gastos, saldo e acerto entre o casal.
+              O fechamento salva um snapshot do mês: renda, gastos, saldo e acertos entre os membros do grupo.
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
@@ -385,7 +380,7 @@ export default function SetupPage() {
         <div style={sectionStyle}>
           <div style={sectionTitle}>🔑 Código de convite</div>
           <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
-            Compartilhe com seu parceiro(a) para que ele(a) entre no casal.
+            Compartilhe com outras pessoas para que elas entrem neste espaço financeiro.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{
@@ -443,7 +438,7 @@ export default function SetupPage() {
               borderRadius: 10, cursor: 'pointer', fontSize: 13,
             }}
           >
-            Sair deste casal
+            Sair deste espaço financeiro
           </button>
           <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
             Seus dados financeiros não serão apagados.
@@ -461,9 +456,9 @@ export default function SetupPage() {
     <>
       <Header title="⚙️ Configurações" />
       <main style={{ padding: 16, maxWidth: 480, margin: '0 auto' }}>
-        <h2 style={{ marginBottom: 6 }}>👫 Bem-vindo(a)!</h2>
+        <h2 style={{ marginBottom: 6 }}>👋 Bem-vindo(a)!</h2>
         <p style={{ color: '#666', fontSize: 14, marginBottom: 28 }}>
-          Você ainda não está em nenhum casal. Crie um novo ou entre com o código do seu parceiro(a).
+          Você ainda não está em nenhum espaço financeiro. Crie um novo ou entre com um código de convite.
         </p>
 
         {/* Nome do usuário antes de prosseguir */}
@@ -487,8 +482,8 @@ export default function SetupPage() {
             }}
           >
             <div style={{ fontSize: 36, marginBottom: 8 }}>🏠</div>
-            <div style={{ fontWeight: 'bold', marginBottom: 4 }}>Criar casal</div>
-            <div style={{ fontSize: 12, color: '#666' }}>Sou o primeiro a entrar</div>
+            <div style={{ fontWeight: 'bold', marginBottom: 4 }}>Criar espaço</div>
+            <div style={{ fontSize: 12, color: '#666' }}>Sou o primeiro(a) a entrar</div>
           </button>
 
           <button
@@ -512,24 +507,24 @@ export default function SetupPage() {
   // ──────────────────────────────────────────────────────────────
   if (view === 'create') return (
     <>
-      <Header title="⚙️ Criar casal" />
+      <Header title="⚙️ Criar espaço" />
       <main style={{ padding: 16, maxWidth: 480, margin: '0 auto' }}>
         <button onClick={() => setView('choose')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3498db', marginBottom: 16, padding: 0, fontSize: 14 }}>
           ← Voltar
         </button>
-        <h2 style={{ marginBottom: 6 }}>🏠 Criar casal</h2>
+        <h2 style={{ marginBottom: 6 }}>🏠 Criar espaço financeiro</h2>
         <p style={{ color: '#666', fontSize: 14, marginBottom: 24 }}>
           Depois de criar, você receberá um código para compartilhar com seu parceiro(a).
         </p>
 
         <form onSubmit={handleCreateHousehold}>
           <div style={{ marginBottom: 14 }}>
-            <label style={labelStyle}>Nome do casal</label>
+            <label style={labelStyle}>Nome do grupo</label>
             <input
               type="text"
               value={newHouseholdName}
               onChange={e => setNewHouseholdName(e.target.value)}
-              placeholder="Lucas & Victória"
+              placeholder="Família Silva, Meu financeiro pessoal..."
               style={inputStyle}
             />
             <div style={{ fontSize: 12, color: '#999', marginTop: 5 }}>
@@ -548,7 +543,7 @@ export default function SetupPage() {
               style={inputStyle}
             />
             <div style={{ fontSize: 12, color: '#999', marginTop: 5 }}>
-              Protege seus dados com criptografia. Você e seu parceiro(a) vão usar este PIN para acessar as finanças. Guarde bem — não é possível recuperá-lo.
+              Protege seus dados com criptografia. Os membros deste grupo vão usar este PIN para acessar as finanças. Guarde bem — não é possível recuperá-lo.
             </div>
           </div>
 
@@ -568,7 +563,7 @@ export default function SetupPage() {
               cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold', fontSize: 16,
             }}
           >
-            {loading ? 'Criando...' : '✅ Criar casal'}
+            {loading ? 'Criando...' : '✅ Criar espaço'}
           </button>
         </form>
       </main>
